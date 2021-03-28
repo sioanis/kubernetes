@@ -1587,8 +1587,16 @@ function Configure_Containerd {
   $config_dir = [System.IO.Path]::GetDirectoryName($config_path)
   New-Item $config_dir -ItemType 'directory' -Force | Out-Null
   Set-Content ${config_path} @"
+[plugins.scheduler]
+  schedule_delay = '0s'
+  startup_delay = '0s'
 [plugins.cri]
   sandbox_image = 'INFRA_CONTAINER_IMAGE'
+[plugins.cri.containerd]
+  snapshotter = 'windows'
+  default_runtime_name = 'runhcs-wcow-process'
+  disable_snapshot_annotations = true
+  discard_unpacked_layers = true
 [plugins.cri.cni]
   bin_dir = 'CNI_BIN_DIR'
   conf_dir = 'CNI_CONF_DIR'
@@ -1600,7 +1608,7 @@ function Configure_Containerd {
 # Register if needed and start containerd service.
 function Start_Containerd {
   # Do the registration only if the containerd service does not exist.
-  if (Get-WMIObject -Class Win32_Service -Filter  "Name='containerd'" -eq $null) {
+  if ((Get-WMIObject -Class Win32_Service -Filter  "Name='containerd'") -eq $null) {
     Log-Output "Creating containerd service"
     & containerd.exe --register-service --log-file "${env:LOGS_DIR}/containerd.log"
   }

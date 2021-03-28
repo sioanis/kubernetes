@@ -487,6 +487,7 @@ ifeq ($(PRINT_HELP),y)
 package package-tarballs:
 	@echo "$$PACKAGE_HELP_INFO"
 else
+package-tarballs: KUBE_BUILD_CONFORMANCE = y
 package package-tarballs:
 	build/package-tarballs.sh
 endif
@@ -506,6 +507,7 @@ ifeq ($(PRINT_HELP),y)
 cross cross-in-a-container:
 	@echo "$$CROSS_HELP_INFO"
 else
+cross cross-in-a-container: KUBE_BUILD_CONFORMANCE = y
 cross:
 	hack/make-rules/cross.sh
 cross-in-a-container: KUBE_OUTPUT_SUBPATH = $(OUT_DIR)/dockerized
