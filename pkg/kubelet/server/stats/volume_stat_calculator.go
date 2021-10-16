@@ -26,6 +26,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/wait"
 	utilfeature "k8s.io/apiserver/pkg/util/feature"
 	"k8s.io/client-go/tools/record"
+	"k8s.io/component-helpers/storage/ephemeral"
 	"k8s.io/klog/v2"
 	stats "k8s.io/kubelet/pkg/apis/stats/v1alpha1"
 	"k8s.io/kubernetes/pkg/features"
@@ -96,8 +97,30 @@ func (s *volumeStatCalculator) GetLatest() (PodVolumeStats, bool) {
 func (s *volumeStatCalculator) calcAndStoreStats() {
 	// Find all Volumes for the Pod
 	volumes, found := s.statsProvider.ListVolumesForPod(s.pod.UID)
-	if !found {
+	blockVolumes, bvFound := s.statsProvider.ListBlockVolumesForPod(s.pod.UID)
+	if !found && !bvFound {
 		return
+	}
+
+	metricVolumes := make(map[string]volume.MetricsProvider)
+
+	if found {
+		for name, v := range volumes {
+			metricVolumes[name] = v
+		}
+	}
+	if bvFound {
+		for name, v := range blockVolumes {
+			// Only add the blockVolume if it implements the MetricsProvider interface
+			if _, ok := v.(volume.MetricsProvider); ok {
+				// Some drivers inherit the MetricsProvider interface from Filesystem
+				// mode volumes, but do not implement it for Block mode. Checking
+				// SupportsMetrics() will prevent panics in that case.
+				if v.SupportsMetrics() {
+					metricVolumes[name] = v
+				}
+			}
+		}
 	}
 
 	// Get volume specs for the pod - key'd by volume name
@@ -109,7 +132,7 @@ func (s *volumeStatCalculator) calcAndStoreStats() {
 	// Call GetMetrics on each Volume and copy the result to a new VolumeStats.FsStats
 	var ephemeralStats []stats.VolumeStats
 	var persistentStats []stats.VolumeStats
-	for name, v := range volumes {
+	for name, v := range metricVolumes {
 		metric, err := v.GetMetrics()
 		if err != nil {
 			// Expected for Volumes that don't support Metrics
@@ -124,6 +147,12 @@ func (s *volumeStatCalculator) calcAndStoreStats() {
 		if pvcSource := volSpec.PersistentVolumeClaim; pvcSource != nil {
 			pvcRef = &stats.PVCReference{
 				Name:      pvcSource.ClaimName,
+				Namespace: s.pod.GetNamespace(),
+			}
+		}
+		if volSpec.Ephemeral != nil && utilfeature.DefaultFeatureGate.Enabled(features.GenericEphemeralVolume) {
+			pvcRef = &stats.PVCReference{
+				Name:      ephemeral.VolumeClaimName(s.pod, &volSpec),
 				Namespace: s.pod.GetNamespace(),
 			}
 		}

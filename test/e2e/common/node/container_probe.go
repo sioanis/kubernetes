@@ -235,6 +235,10 @@ var _ = SIGDescribe("Probing container", func() {
 		Description: A Pod is created with readiness probe with a Exec action on the Pod. If the readiness probe call does not return within the timeout specified, readiness probe MUST not be Ready.
 	*/
 	ginkgo.It("should not be ready with an exec readiness probe timeout [MinimumKubeletVersion:1.20] [NodeConformance]", func() {
+		// The ExecProbeTimeout feature gate exists to allow backwards-compatibility with pre-1.20 cluster behaviors, where readiness probe timeouts were ignored
+		// If ExecProbeTimeout feature gate is disabled, timeout enforcement for exec readiness probe is disabled, so we should skip this test
+		e2eskipper.SkipUnlessExecProbeTimeoutEnabled()
+
 		cmd := []string{"/bin/sh", "-c", "sleep 600"}
 		readinessProbe := &v1.Probe{
 			Handler:             execHandler([]string{"/bin/sh", "-c", "sleep 10"}),
@@ -244,6 +248,28 @@ var _ = SIGDescribe("Probing container", func() {
 		}
 		pod := busyBoxPodSpec(readinessProbe, nil, cmd)
 		runReadinessFailTest(f, pod, time.Minute)
+	})
+
+	/*
+		Release: v1.21
+		Testname: Pod liveness probe, container exec timeout, restart
+		Description: A Pod is created with liveness probe with a Exec action on the Pod. If the liveness probe call does not return within the timeout specified, liveness probe MUST restart the Pod. When ExecProbeTimeout feature gate is disabled and cluster is using dockershim, the timeout is ignored BUT a failing liveness probe MUST restart the Pod.
+	*/
+	ginkgo.It("should be restarted with a failing exec liveness probe that took longer than the timeout", func() {
+		// The ExecProbeTimeout feature gate exists to allow backwards-compatibility with pre-1.20 cluster behaviors using dockershim, where livenessProbe timeouts were ignored
+		// If ExecProbeTimeout feature gate is disabled on a dockershim cluster, timeout enforcement for exec livenessProbes is disabled, but a failing liveness probe MUST still trigger a restart
+		// Note ExecProbeTimeout=false is not recommended for non-dockershim clusters (e.g., containerd), and this test will fail if run against such a configuration
+		e2eskipper.SkipUnlessExecProbeTimeoutEnabled()
+
+		cmd := []string{"/bin/sh", "-c", "sleep 600"}
+		livenessProbe := &v1.Probe{
+			Handler:             execHandler([]string{"/bin/sh", "-c", "sleep 10 & exit 1"}),
+			InitialDelaySeconds: 15,
+			TimeoutSeconds:      1,
+			FailureThreshold:    1,
+		}
+		pod := busyBoxPodSpec(nil, livenessProbe, cmd)
+		RunLivenessTest(f, pod, 1, defaultObservationTimeout)
 	})
 
 	/*
@@ -378,16 +404,20 @@ var _ = SIGDescribe("Probing container", func() {
 		Description: A Pod is created with startup and readiness probes. The Container is started by creating /tmp/startup after 45 seconds, delaying the ready state by this amount of time. This is similar to the "Pod readiness probe, with initial delay" test.
 	*/
 	ginkgo.It("should be ready immediately after startupProbe succeeds", func() {
-		cmd := []string{"/bin/sh", "-c", "echo ok >/tmp/health; sleep 10; echo ok >/tmp/startup; sleep 600"}
+		// Probe workers sleep at Kubelet start for a random time which is at most PeriodSeconds
+		// this test requires both readiness and startup workers running before updating statuses
+		// to avoid flakes, ensure sleep before startup (32s) > readinessProbe.PeriodSeconds
+		cmd := []string{"/bin/sh", "-c", "echo ok >/tmp/health; sleep 32; echo ok >/tmp/startup; sleep 600"}
 		readinessProbe := &v1.Probe{
 			Handler:             execHandler([]string{"/bin/cat", "/tmp/health"}),
 			InitialDelaySeconds: 0,
-			PeriodSeconds:       60,
+			PeriodSeconds:       30,
 		}
 		startupProbe := &v1.Probe{
 			Handler:             execHandler([]string{"/bin/cat", "/tmp/startup"}),
 			InitialDelaySeconds: 0,
-			FailureThreshold:    60,
+			FailureThreshold:    120,
+			PeriodSeconds:       5,
 		}
 		p := podClient.Create(startupPodSpec(startupProbe, readinessProbe, nil, cmd))
 
@@ -416,8 +446,8 @@ var _ = SIGDescribe("Probing container", func() {
 		if readyIn < 0 {
 			framework.Failf("Pod became ready before startupProbe succeeded")
 		}
-		if readyIn > 5*time.Second {
-			framework.Failf("Pod became ready in %v, more than 5s after startupProbe succeeded. It means that the delay readiness probes were not initiated immediately after startup finished.", readyIn)
+		if readyIn > 25*time.Second {
+			framework.Failf("Pod became ready in %v, more than 25s after startupProbe succeeded. It means that the delay readiness probes were not initiated immediately after startup finished.", readyIn)
 		}
 	})
 

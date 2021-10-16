@@ -31,7 +31,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/go-openapi/spec"
 	"sigs.k8s.io/yaml"
 
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
@@ -58,6 +57,7 @@ import (
 	etcd3testing "k8s.io/apiserver/pkg/storage/etcd3/testing"
 	"k8s.io/apiserver/pkg/util/webhook"
 	"k8s.io/client-go/tools/cache"
+	"k8s.io/kube-openapi/pkg/validation/spec"
 )
 
 func TestConvertFieldLabel(t *testing.T) {
@@ -470,7 +470,7 @@ func testHandlerConversion(t *testing.T, enableWatchCache bool) {
 	etcdOptions := options.NewEtcdOptions(storageConfig)
 	etcdOptions.StorageConfig.Codec = unstructured.UnstructuredJSONScheme
 	restOptionsGetter := generic.RESTOptions{
-		StorageConfig:           &etcdOptions.StorageConfig,
+		StorageConfig:           etcdOptions.StorageConfig.ForResource(schema.GroupResource{Group: crd.Spec.Group, Resource: crd.Spec.Names.Plural}),
 		Decorator:               generic.UndecoratedStorage,
 		EnableGarbageCollection: true,
 		DeleteCollectionWorkers: 1,

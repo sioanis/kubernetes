@@ -283,8 +283,8 @@ var _ = utils.SIGDescribe("PersistentVolumes-local ", func() {
 					e2epod.DeletePodOrFail(config.client, config.ns, pod2.Name)
 				})
 
-				ginkgo.It("should set different fsGroup for second pod if first pod is deleted", func() {
-					e2eskipper.Skipf("Disabled temporarily, reopen after #73168 is fixed")
+				ginkgo.It("should set different fsGroup for second pod if first pod is deleted [Flaky]", func() {
+					// TODO: Disabled temporarily, remove [Flaky] tag after #73168 is fixed.
 					fsGroup1, fsGroup2 := int64(1234), int64(4321)
 					ginkgo.By("Create first pod and check fsGroup is set")
 					pod1 := createPodWithFsGroupTest(config, testVol, fsGroup1, fsGroup1)
@@ -373,11 +373,11 @@ var _ = utils.SIGDescribe("PersistentVolumes-local ", func() {
 		})
 
 		ginkgo.It("should fail scheduling due to different NodeAffinity", func() {
-			testPodWithNodeConflict(config, volumeType, conflictNodeName, makeLocalPodWithNodeAffinity, immediateMode)
+			testPodWithNodeConflict(config, testVol, conflictNodeName, makeLocalPodWithNodeAffinity)
 		})
 
 		ginkgo.It("should fail scheduling due to different NodeSelector", func() {
-			testPodWithNodeConflict(config, volumeType, conflictNodeName, makeLocalPodWithNodeSelector, immediateMode)
+			testPodWithNodeConflict(config, testVol, conflictNodeName, makeLocalPodWithNodeSelector)
 		})
 	})
 
@@ -605,8 +605,7 @@ var _ = utils.SIGDescribe("PersistentVolumes-local ", func() {
 				defer podsLock.Unlock()
 
 				for _, pod := range podsList.Items {
-					switch pod.Status.Phase {
-					case v1.PodSucceeded:
+					if pod.Status.Phase == v1.PodSucceeded {
 						// Delete pod and its PVCs
 						if err := deletePodAndPVCs(config, &pod); err != nil {
 							return false, err
@@ -614,9 +613,6 @@ var _ = utils.SIGDescribe("PersistentVolumes-local ", func() {
 						delete(pods, pod.Name)
 						numFinished++
 						framework.Logf("%v/%v pods finished", numFinished, totalPods)
-					case v1.PodUnknown:
-						return false, fmt.Errorf("pod %v is in %v phase", pod.Name, pod.Status.Phase)
-					case v1.PodFailed:
 					}
 				}
 
@@ -658,7 +654,7 @@ var _ = utils.SIGDescribe("PersistentVolumes-local ", func() {
 			var (
 				pvc   *v1.PersistentVolumeClaim
 				pods  = map[string]*v1.Pod{}
-				count = 50
+				count = 2
 				err   error
 			)
 			pvc = e2epv.MakePersistentVolumeClaim(makeLocalPVCConfig(config, DirectoryLocalVolumeType), config.ns)
@@ -720,10 +716,8 @@ func deletePodAndPVCs(config *localTestConfig, pod *v1.Pod) error {
 
 type makeLocalPodWith func(config *localTestConfig, volume *localTestVolume, nodeName string) *v1.Pod
 
-func testPodWithNodeConflict(config *localTestConfig, testVolType localVolumeType, nodeName string, makeLocalPodFunc makeLocalPodWith, bindingMode storagev1.VolumeBindingMode) {
-	ginkgo.By(fmt.Sprintf("local-volume-type: %s", testVolType))
-	testVols := setupLocalVolumesPVCsPVs(config, testVolType, config.randomNode, 1, bindingMode)
-	testVol := testVols[0]
+func testPodWithNodeConflict(config *localTestConfig, testVol *localTestVolume, nodeName string, makeLocalPodFunc makeLocalPodWith) {
+	ginkgo.By(fmt.Sprintf("local-volume-type: %s", testVol.localVolumeType))
 
 	pod := makeLocalPodFunc(config, testVol, nodeName)
 	pod, err := config.client.CoreV1().Pods(config.ns).Create(context.TODO(), pod, metav1.CreateOptions{})

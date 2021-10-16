@@ -24,6 +24,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	testutils "k8s.io/kubernetes/test/utils"
@@ -87,20 +88,6 @@ func detectCoresPerSocket() int {
 	framework.ExpectNoError(err)
 
 	return coreCount
-}
-
-func countSRIOVDevices() (int, error) {
-	outData, err := exec.Command("/bin/sh", "-c", "ls /sys/bus/pci/devices/*/physfn | wc -w").Output()
-	if err != nil {
-		return -1, err
-	}
-	return strconv.Atoi(strings.TrimSpace(string(outData)))
-}
-
-func detectSRIOVDevices() int {
-	devCount, err := countSRIOVDevices()
-	framework.ExpectNoError(err)
-	return devCount
 }
 
 func makeContainers(ctnCmd string, ctnAttributes []tmCtnAttribute) (ctns []v1.Container) {
@@ -371,7 +358,7 @@ func runTopologyManagerPolicySuiteTests(f *framework.Framework) {
 	runNonGuPodTest(f, cpuCap)
 
 	ginkgo.By("running a Gu pod")
-	runGuPodTest(f)
+	runGuPodTest(f, 1)
 
 	ginkgo.By("running multiple Gu and non-Gu pods")
 	runMultipleGuNonGuPods(f, cpuCap, cpuAlloc)
@@ -414,7 +401,7 @@ func waitForAllContainerRemoval(podName, podNS string) {
 }
 
 func runTopologyManagerPositiveTest(f *framework.Framework, numPods int, ctnAttrs, initCtnAttrs []tmCtnAttribute, envInfo *testEnvInfo) {
-	var pods []*v1.Pod
+	podMap := make(map[string]*v1.Pod)
 
 	for podID := 0; podID < numPods; podID++ {
 		podName := fmt.Sprintf("gu-pod-%d", podID)
@@ -422,30 +409,39 @@ func runTopologyManagerPositiveTest(f *framework.Framework, numPods int, ctnAttr
 		pod := makeTopologyManagerTestPod(podName, ctnAttrs, initCtnAttrs)
 		pod = f.PodClient().CreateSync(pod)
 		framework.Logf("created pod %s", podName)
-		pods = append(pods, pod)
+		podMap[podName] = pod
 	}
 
 	// per https://github.com/kubernetes/enhancements/blob/master/keps/sig-node/693-topology-manager/README.md#multi-numa-systems-tests
 	// we can do a menaingful validation only when using the single-numa node policy
 	if envInfo.policy == topologymanager.PolicySingleNumaNode {
-		for podID := 0; podID < numPods; podID++ {
-			validatePodAlignment(f, pods[podID], envInfo)
+		for _, pod := range podMap {
+			validatePodAlignment(f, pod, envInfo)
 		}
 		if envInfo.scope == podScopeTopology {
-			for podID := 0; podID < numPods; podID++ {
-				err := validatePodAlignmentWithPodScope(f, pods[podID], envInfo)
+			for _, pod := range podMap {
+				err := validatePodAlignmentWithPodScope(f, pod, envInfo)
 				framework.ExpectNoError(err)
 			}
 		}
 	}
 
-	for podID := 0; podID < numPods; podID++ {
-		pod := pods[podID]
-		framework.Logf("deleting the pod %s/%s and waiting for container removal",
-			pod.Namespace, pod.Name)
-		deletePodSyncByName(f, pod.Name)
-		waitForAllContainerRemoval(pod.Name, pod.Namespace)
+	deletePodsAsync(f, podMap)
+}
+
+func deletePodsAsync(f *framework.Framework, podMap map[string]*v1.Pod) {
+	var wg sync.WaitGroup
+	for _, pod := range podMap {
+		wg.Add(1)
+		go func(podNS, podName string) {
+			defer ginkgo.GinkgoRecover()
+			defer wg.Done()
+
+			deletePodSyncByName(f, podName)
+			waitForAllContainerRemoval(podName, podNS)
+		}(pod.Namespace, pod.Name)
 	}
+	wg.Wait()
 }
 
 func runTopologyManagerNegativeTest(f *framework.Framework, ctnAttrs, initCtnAttrs []tmCtnAttribute, envInfo *testEnvInfo) {
@@ -586,12 +582,11 @@ func teardownSRIOVConfigOrFail(f *framework.Framework, sd *sriovData) {
 }
 
 func runTMScopeResourceAlignmentTestSuite(f *framework.Framework, configMap *v1.ConfigMap, reservedSystemCPUs, policy string, numaNodes, coreCount int) {
-	threadsPerCore := 1
-	if isHTEnabled() {
-		threadsPerCore = 2
-	}
+	threadsPerCore := getSMTLevel()
 	sd := setupSRIOVConfigOrFail(f, configMap)
 	var ctnAttrs, initCtnAttrs []tmCtnAttribute
+
+	waitForSRIOVResources(f, sd)
 
 	envInfo := &testEnvInfo{
 		numaNodes:         numaNodes,
@@ -687,10 +682,7 @@ func runTMScopeResourceAlignmentTestSuite(f *framework.Framework, configMap *v1.
 }
 
 func runTopologyManagerNodeAlignmentSuiteTests(f *framework.Framework, sd *sriovData, reservedSystemCPUs, policy string, numaNodes, coreCount int) {
-	threadsPerCore := 1
-	if isHTEnabled() {
-		threadsPerCore = 2
-	}
+	threadsPerCore := getSMTLevel()
 
 	waitForSRIOVResources(f, sd)
 
@@ -892,21 +884,7 @@ func runTopologyManagerTests(f *framework.Framework) {
 	})
 
 	ginkgo.It("run Topology Manager node alignment test suite", func() {
-		// this is a very rough check. We just want to rule out system that does NOT have
-		// any SRIOV device. A more proper check will be done in runTopologyManagerPositiveTest
-		sriovdevCount := detectSRIOVDevices()
-		numaNodes := detectNUMANodes()
-		coreCount := detectCoresPerSocket()
-
-		if numaNodes < minNumaNodes {
-			e2eskipper.Skipf("this test is meant to run on a multi-node NUMA system")
-		}
-		if coreCount < minCoreCount {
-			e2eskipper.Skipf("this test is meant to run on a system with at least 4 cores per socket")
-		}
-		if sriovdevCount == 0 {
-			e2eskipper.Skipf("this test is meant to run on a system with at least one configured VF from SRIOV device")
-		}
+		numaNodes, coreCount := hostPrecheck()
 
 		configMap := getSRIOVDevicePluginConfigMap(framework.TestContext.SriovdpConfigMapFile)
 
@@ -929,19 +907,7 @@ func runTopologyManagerTests(f *framework.Framework) {
 	})
 
 	ginkgo.It("run the Topology Manager pod scope alignment test suite", func() {
-		sriovdevCount := detectSRIOVDevices()
-		numaNodes := detectNUMANodes()
-		coreCount := detectCoresPerSocket()
-
-		if numaNodes < minNumaNodes {
-			e2eskipper.Skipf("this test is intended to be run on a multi-node NUMA system")
-		}
-		if coreCount < minCoreCount {
-			e2eskipper.Skipf("this test is intended to be run on a system with at least %d cores per socket", minCoreCount)
-		}
-		if sriovdevCount == 0 {
-			e2eskipper.Skipf("this test is intended to be run on a system with at least one SR-IOV VF enabled")
-		}
+		numaNodes, coreCount := hostPrecheck()
 
 		configMap := getSRIOVDevicePluginConfigMap(framework.TestContext.SriovdpConfigMapFile)
 
@@ -960,6 +926,25 @@ func runTopologyManagerTests(f *framework.Framework) {
 		// restore kubelet config
 		setOldKubeletConfig(f, oldCfg)
 	})
+}
+
+func hostPrecheck() (int, int) {
+	// this is a very rough check. We just want to rule out system that does NOT have
+	// any SRIOV device. A more proper check will be done in runTopologyManagerPositiveTest
+
+	numaNodes := detectNUMANodes()
+	if numaNodes < minNumaNodes {
+		e2eskipper.Skipf("this test is intended to be run on a multi-node NUMA system")
+	}
+
+	coreCount := detectCoresPerSocket()
+	if coreCount < minCoreCount {
+		e2eskipper.Skipf("this test is intended to be run on a system with at least %d cores per socket", minCoreCount)
+	}
+
+	requireSRIOVDevices()
+
+	return numaNodes, coreCount
 }
 
 // Serial because the test updates kubelet configuration.

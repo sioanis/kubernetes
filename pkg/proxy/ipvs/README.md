@@ -346,7 +346,7 @@ kubeProxy:
 
 before running
 
-`kube init --config <path_to_configuration_file>`
+`kubeadm init --config <path_to_configuration_file>`
 
 to specify the ipvs mode before deploying the cluster.
 
@@ -365,7 +365,7 @@ or similar logs occur in kube-proxy logs (for example, `/tmp/kube-proxy.log` for
 Using ipvs Proxier.
 ```
 
-While there is no IPVS proxy rules or the following logs ocuurs indicate that the kube-proxy fails to use IPVS mode:
+While there is no IPVS proxy rules or the following logs occurs indicate that the kube-proxy fails to use IPVS mode:
 ```
 Can't use ipvs proxier, trying iptables proxier
 Using iptables Proxier.

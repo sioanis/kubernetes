@@ -17,6 +17,7 @@ limitations under the License.
 package controller
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"sync"
@@ -38,13 +39,13 @@ type BaseControllerRefManager struct {
 
 	canAdoptErr  error
 	canAdoptOnce sync.Once
-	CanAdoptFunc func() error
+	CanAdoptFunc func(ctx context.Context) error
 }
 
-func (m *BaseControllerRefManager) CanAdopt() error {
+func (m *BaseControllerRefManager) CanAdopt(ctx context.Context) error {
 	m.canAdoptOnce.Do(func() {
 		if m.CanAdoptFunc != nil {
-			m.canAdoptErr = m.CanAdoptFunc()
+			m.canAdoptErr = m.CanAdoptFunc(ctx)
 		}
 	})
 	return m.canAdoptErr
@@ -65,7 +66,7 @@ func (m *BaseControllerRefManager) CanAdopt() error {
 // own the object.
 //
 // No reconciliation will be attempted if the controller is being deleted.
-func (m *BaseControllerRefManager) ClaimObject(obj metav1.Object, match func(metav1.Object) bool, adopt, release func(metav1.Object) error) (bool, error) {
+func (m *BaseControllerRefManager) ClaimObject(ctx context.Context, obj metav1.Object, match func(metav1.Object) bool, adopt func(context.Context, metav1.Object) error, release func(metav1.Object) error) (bool, error) {
 	controllerRef := metav1.GetControllerOfNoCopy(obj)
 	if controllerRef != nil {
 		if controllerRef.UID != m.Controller.GetUID() {
@@ -107,7 +108,7 @@ func (m *BaseControllerRefManager) ClaimObject(obj metav1.Object, match func(met
 		return false, nil
 	}
 	// Selector matches. Try to adopt.
-	if err := adopt(obj); err != nil {
+	if err := adopt(ctx, obj); err != nil {
 		// If the pod no longer exists, ignore the error.
 		if errors.IsNotFound(err) {
 			return false, nil
@@ -124,6 +125,7 @@ type PodControllerRefManager struct {
 	BaseControllerRefManager
 	controllerKind schema.GroupVersionKind
 	podControl     PodControlInterface
+	finalizers     []string
 }
 
 // NewPodControllerRefManager returns a PodControllerRefManager that exposes
@@ -142,7 +144,8 @@ func NewPodControllerRefManager(
 	controller metav1.Object,
 	selector labels.Selector,
 	controllerKind schema.GroupVersionKind,
-	canAdopt func() error,
+	canAdopt func(ctx context.Context) error,
+	finalizers ...string,
 ) *PodControllerRefManager {
 	return &PodControllerRefManager{
 		BaseControllerRefManager: BaseControllerRefManager{
@@ -152,6 +155,7 @@ func NewPodControllerRefManager(
 		},
 		controllerKind: controllerKind,
 		podControl:     podControl,
+		finalizers:     finalizers,
 	}
 }
 
@@ -170,7 +174,7 @@ func NewPodControllerRefManager(
 //
 // If the error is nil, either the reconciliation succeeded, or no
 // reconciliation was necessary. The list of Pods that you now own is returned.
-func (m *PodControllerRefManager) ClaimPods(pods []*v1.Pod, filters ...func(*v1.Pod) bool) ([]*v1.Pod, error) {
+func (m *PodControllerRefManager) ClaimPods(ctx context.Context, pods []*v1.Pod, filters ...func(*v1.Pod) bool) ([]*v1.Pod, error) {
 	var claimed []*v1.Pod
 	var errlist []error
 
@@ -187,15 +191,15 @@ func (m *PodControllerRefManager) ClaimPods(pods []*v1.Pod, filters ...func(*v1.
 		}
 		return true
 	}
-	adopt := func(obj metav1.Object) error {
-		return m.AdoptPod(obj.(*v1.Pod))
+	adopt := func(ctx context.Context, obj metav1.Object) error {
+		return m.AdoptPod(ctx, obj.(*v1.Pod))
 	}
 	release := func(obj metav1.Object) error {
 		return m.ReleasePod(obj.(*v1.Pod))
 	}
 
 	for _, pod := range pods {
-		ok, err := m.ClaimObject(pod, match, adopt, release)
+		ok, err := m.ClaimObject(ctx, pod, match, adopt, release)
 		if err != nil {
 			errlist = append(errlist, err)
 			continue
@@ -209,14 +213,14 @@ func (m *PodControllerRefManager) ClaimPods(pods []*v1.Pod, filters ...func(*v1.
 
 // AdoptPod sends a patch to take control of the pod. It returns the error if
 // the patching fails.
-func (m *PodControllerRefManager) AdoptPod(pod *v1.Pod) error {
-	if err := m.CanAdopt(); err != nil {
+func (m *PodControllerRefManager) AdoptPod(ctx context.Context, pod *v1.Pod) error {
+	if err := m.CanAdopt(ctx); err != nil {
 		return fmt.Errorf("can't adopt Pod %v/%v (%v): %v", pod.Namespace, pod.Name, pod.UID, err)
 	}
 	// Note that ValidateOwnerReferences() will reject this patch if another
 	// OwnerReference exists with controller=true.
 
-	patchBytes, err := ownerRefControllerPatch(m.Controller, m.controllerKind, pod.UID)
+	patchBytes, err := ownerRefControllerPatch(m.Controller, m.controllerKind, pod.UID, m.finalizers...)
 	if err != nil {
 		return err
 	}
@@ -228,7 +232,7 @@ func (m *PodControllerRefManager) AdoptPod(pod *v1.Pod) error {
 func (m *PodControllerRefManager) ReleasePod(pod *v1.Pod) error {
 	klog.V(2).Infof("patching pod %s_%s to remove its controllerRef to %s/%s:%s",
 		pod.Namespace, pod.Name, m.controllerKind.GroupVersion(), m.controllerKind.Kind, m.Controller.GetName())
-	patchBytes, err := deleteOwnerRefStrategicMergePatch(pod.UID, m.Controller.GetUID())
+	patchBytes, err := deleteOwnerRefStrategicMergePatch(pod.UID, m.Controller.GetUID(), m.finalizers...)
 	if err != nil {
 		return err
 	}
@@ -280,7 +284,7 @@ func NewReplicaSetControllerRefManager(
 	controller metav1.Object,
 	selector labels.Selector,
 	controllerKind schema.GroupVersionKind,
-	canAdopt func() error,
+	canAdopt func(ctx context.Context) error,
 ) *ReplicaSetControllerRefManager {
 	return &ReplicaSetControllerRefManager{
 		BaseControllerRefManager: BaseControllerRefManager{
@@ -306,22 +310,22 @@ func NewReplicaSetControllerRefManager(
 // If the error is nil, either the reconciliation succeeded, or no
 // reconciliation was necessary. The list of ReplicaSets that you now own is
 // returned.
-func (m *ReplicaSetControllerRefManager) ClaimReplicaSets(sets []*apps.ReplicaSet) ([]*apps.ReplicaSet, error) {
+func (m *ReplicaSetControllerRefManager) ClaimReplicaSets(ctx context.Context, sets []*apps.ReplicaSet) ([]*apps.ReplicaSet, error) {
 	var claimed []*apps.ReplicaSet
 	var errlist []error
 
 	match := func(obj metav1.Object) bool {
 		return m.Selector.Matches(labels.Set(obj.GetLabels()))
 	}
-	adopt := func(obj metav1.Object) error {
-		return m.AdoptReplicaSet(obj.(*apps.ReplicaSet))
+	adopt := func(ctx context.Context, obj metav1.Object) error {
+		return m.AdoptReplicaSet(ctx, obj.(*apps.ReplicaSet))
 	}
 	release := func(obj metav1.Object) error {
 		return m.ReleaseReplicaSet(obj.(*apps.ReplicaSet))
 	}
 
 	for _, rs := range sets {
-		ok, err := m.ClaimObject(rs, match, adopt, release)
+		ok, err := m.ClaimObject(ctx, rs, match, adopt, release)
 		if err != nil {
 			errlist = append(errlist, err)
 			continue
@@ -335,8 +339,8 @@ func (m *ReplicaSetControllerRefManager) ClaimReplicaSets(sets []*apps.ReplicaSe
 
 // AdoptReplicaSet sends a patch to take control of the ReplicaSet. It returns
 // the error if the patching fails.
-func (m *ReplicaSetControllerRefManager) AdoptReplicaSet(rs *apps.ReplicaSet) error {
-	if err := m.CanAdopt(); err != nil {
+func (m *ReplicaSetControllerRefManager) AdoptReplicaSet(ctx context.Context, rs *apps.ReplicaSet) error {
+	if err := m.CanAdopt(ctx); err != nil {
 		return fmt.Errorf("can't adopt ReplicaSet %v/%v (%v): %v", rs.Namespace, rs.Name, rs.UID, err)
 	}
 	// Note that ValidateOwnerReferences() will reject this patch if another
@@ -378,9 +382,9 @@ func (m *ReplicaSetControllerRefManager) ReleaseReplicaSet(replicaSet *apps.Repl
 //
 // The CanAdopt() function calls getObject() to fetch the latest value,
 // and denies adoption attempts if that object has a non-nil DeletionTimestamp.
-func RecheckDeletionTimestamp(getObject func() (metav1.Object, error)) func() error {
-	return func() error {
-		obj, err := getObject()
+func RecheckDeletionTimestamp(getObject func(context.Context) (metav1.Object, error)) func(context.Context) error {
+	return func(ctx context.Context) error {
+		obj, err := getObject(ctx)
 		if err != nil {
 			return fmt.Errorf("can't recheck DeletionTimestamp: %v", err)
 		}
@@ -418,7 +422,7 @@ func NewControllerRevisionControllerRefManager(
 	controller metav1.Object,
 	selector labels.Selector,
 	controllerKind schema.GroupVersionKind,
-	canAdopt func() error,
+	canAdopt func(ctx context.Context) error,
 ) *ControllerRevisionControllerRefManager {
 	return &ControllerRevisionControllerRefManager{
 		BaseControllerRefManager: BaseControllerRefManager{
@@ -444,22 +448,22 @@ func NewControllerRevisionControllerRefManager(
 // If the error is nil, either the reconciliation succeeded, or no
 // reconciliation was necessary. The list of ControllerRevisions that you now own is
 // returned.
-func (m *ControllerRevisionControllerRefManager) ClaimControllerRevisions(histories []*apps.ControllerRevision) ([]*apps.ControllerRevision, error) {
+func (m *ControllerRevisionControllerRefManager) ClaimControllerRevisions(ctx context.Context, histories []*apps.ControllerRevision) ([]*apps.ControllerRevision, error) {
 	var claimed []*apps.ControllerRevision
 	var errlist []error
 
 	match := func(obj metav1.Object) bool {
 		return m.Selector.Matches(labels.Set(obj.GetLabels()))
 	}
-	adopt := func(obj metav1.Object) error {
-		return m.AdoptControllerRevision(obj.(*apps.ControllerRevision))
+	adopt := func(ctx context.Context, obj metav1.Object) error {
+		return m.AdoptControllerRevision(ctx, obj.(*apps.ControllerRevision))
 	}
 	release := func(obj metav1.Object) error {
 		return m.ReleaseControllerRevision(obj.(*apps.ControllerRevision))
 	}
 
 	for _, h := range histories {
-		ok, err := m.ClaimObject(h, match, adopt, release)
+		ok, err := m.ClaimObject(ctx, h, match, adopt, release)
 		if err != nil {
 			errlist = append(errlist, err)
 			continue
@@ -473,8 +477,8 @@ func (m *ControllerRevisionControllerRefManager) ClaimControllerRevisions(histor
 
 // AdoptControllerRevision sends a patch to take control of the ControllerRevision. It returns the error if
 // the patching fails.
-func (m *ControllerRevisionControllerRefManager) AdoptControllerRevision(history *apps.ControllerRevision) error {
-	if err := m.CanAdopt(); err != nil {
+func (m *ControllerRevisionControllerRefManager) AdoptControllerRevision(ctx context.Context, history *apps.ControllerRevision) error {
+	if err := m.CanAdopt(ctx); err != nil {
 		return fmt.Errorf("can't adopt ControllerRevision %v/%v (%v): %v", history.Namespace, history.Name, history.UID, err)
 	}
 	// Note that ValidateOwnerReferences() will reject this patch if another
@@ -518,19 +522,22 @@ type objectForDeleteOwnerRefStrategicMergePatch struct {
 }
 
 type objectMetaForMergePatch struct {
-	UID             types.UID           `json:"uid"`
-	OwnerReferences []map[string]string `json:"ownerReferences"`
+	UID              types.UID           `json:"uid"`
+	OwnerReferences  []map[string]string `json:"ownerReferences"`
+	DeleteFinalizers []string            `json:"$deleteFromPrimitiveList/finalizers,omitempty"`
 }
 
-func deleteOwnerRefStrategicMergePatch(dependentUID types.UID, ownerUIDs ...types.UID) ([]byte, error) {
-	var pieces []map[string]string
-	for _, ownerUID := range ownerUIDs {
-		pieces = append(pieces, map[string]string{"$patch": "delete", "uid": string(ownerUID)})
-	}
+func deleteOwnerRefStrategicMergePatch(dependentUID types.UID, ownerUID types.UID, finalizers ...string) ([]byte, error) {
 	patch := objectForDeleteOwnerRefStrategicMergePatch{
 		Metadata: objectMetaForMergePatch{
-			UID:             dependentUID,
-			OwnerReferences: pieces,
+			UID: dependentUID,
+			OwnerReferences: []map[string]string{
+				{
+					"$patch": "delete",
+					"uid":    string(ownerUID),
+				},
+			},
+			DeleteFinalizers: finalizers,
 		},
 	}
 	patchBytes, err := json.Marshal(&patch)
@@ -547,9 +554,10 @@ type objectForAddOwnerRefPatch struct {
 type objectMetaForPatch struct {
 	OwnerReferences []metav1.OwnerReference `json:"ownerReferences"`
 	UID             types.UID               `json:"uid"`
+	Finalizers      []string                `json:"finalizers,omitempty"`
 }
 
-func ownerRefControllerPatch(controller metav1.Object, controllerKind schema.GroupVersionKind, uid types.UID) ([]byte, error) {
+func ownerRefControllerPatch(controller metav1.Object, controllerKind schema.GroupVersionKind, uid types.UID, finalizers ...string) ([]byte, error) {
 	blockOwnerDeletion := true
 	isController := true
 	addControllerPatch := objectForAddOwnerRefPatch{
@@ -565,6 +573,7 @@ func ownerRefControllerPatch(controller metav1.Object, controllerKind schema.Gro
 					BlockOwnerDeletion: &blockOwnerDeletion,
 				},
 			},
+			Finalizers: finalizers,
 		},
 	}
 	patchBytes, err := json.Marshal(&addControllerPatch)

@@ -25,7 +25,6 @@ import (
 
 	"github.com/onsi/ginkgo"
 	"github.com/onsi/gomega"
-
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
@@ -34,6 +33,7 @@ import (
 	clientset "k8s.io/client-go/kubernetes"
 	"k8s.io/klog/v2"
 	"k8s.io/kubectl/pkg/util/podutils"
+
 	e2elog "k8s.io/kubernetes/test/e2e/framework/log"
 	testutils "k8s.io/kubernetes/test/utils"
 	imageutils "k8s.io/kubernetes/test/utils/image"
@@ -332,6 +332,23 @@ func podContainerStarted(c clientset.Interface, namespace, podName string, conta
 		}
 		containerStatus := pod.Status.ContainerStatuses[containerIndex]
 		return *containerStatus.Started, nil
+	}
+}
+
+func isContainerRunning(c clientset.Interface, namespace, podName, containerName string) wait.ConditionFunc {
+	return func() (bool, error) {
+		pod, err := c.CoreV1().Pods(namespace).Get(context.TODO(), podName, metav1.GetOptions{})
+		if err != nil {
+			return false, err
+		}
+		for _, statuses := range [][]v1.ContainerStatus{pod.Status.ContainerStatuses, pod.Status.InitContainerStatuses, pod.Status.EphemeralContainerStatuses} {
+			for _, cs := range statuses {
+				if cs.Name == containerName {
+					return cs.State.Running != nil, nil
+				}
+			}
+		}
+		return false, nil
 	}
 }
 

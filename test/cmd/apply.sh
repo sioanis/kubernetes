@@ -101,7 +101,6 @@ run_kubectl_apply_tests() {
   kube::test::get_object_assert pods "{{range.items}}{{${id_field:?}}}:{{end}}" ''
 
   # apply dry-run
-  kubectl apply --dry-run=true -f hack/testdata/pod.yaml "${kube_flags[@]:?}"
   kubectl apply --dry-run=client -f hack/testdata/pod.yaml "${kube_flags[@]:?}"
   kubectl apply --dry-run=server -f hack/testdata/pod.yaml "${kube_flags[@]:?}"
   # No pod exists
@@ -126,20 +125,32 @@ run_kubectl_apply_tests() {
   kubectl "${kube_flags_with_token[@]:?}" create -f - << __EOF__
 {
   "kind": "CustomResourceDefinition",
-  "apiVersion": "apiextensions.k8s.io/v1beta1",
+  "apiVersion": "apiextensions.k8s.io/v1",
   "metadata": {
     "name": "resources.mygroup.example.com"
   },
   "spec": {
     "group": "mygroup.example.com",
-    "version": "v1alpha1",
     "scope": "Namespaced",
     "names": {
       "plural": "resources",
       "singular": "resource",
       "kind": "Kind",
       "listKind": "KindList"
-    }
+    },
+    "versions": [
+      {
+        "name": "v1alpha1",
+        "served": true,
+        "storage": true,
+        "schema": {
+          "openAPIV3Schema": {
+            "x-kubernetes-preserve-unknown-fields": true,
+            "type": "object"
+          }
+        }
+      }
+    ]
   }
 }
 __EOF__
@@ -431,20 +442,32 @@ run_kubectl_server_side_apply_tests() {
   kubectl "${kube_flags_with_token[@]}" create -f - << __EOF__
 {
   "kind": "CustomResourceDefinition",
-  "apiVersion": "apiextensions.k8s.io/v1beta1",
+  "apiVersion": "apiextensions.k8s.io/v1",
   "metadata": {
     "name": "resources.mygroup.example.com"
   },
   "spec": {
     "group": "mygroup.example.com",
-    "version": "v1alpha1",
     "scope": "Namespaced",
     "names": {
       "plural": "resources",
       "singular": "resource",
       "kind": "Kind",
       "listKind": "KindList"
-    }
+    },
+    "versions": [
+      {
+        "name": "v1alpha1",
+        "served": true,
+        "storage": true,
+        "schema": {
+          "openAPIV3Schema": {
+            "x-kubernetes-preserve-unknown-fields": true,
+            "type": "object"
+          }
+        }
+      }
+    ]
   }
 }
 __EOF__

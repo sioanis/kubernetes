@@ -17,6 +17,7 @@ limitations under the License.
 package daemon
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -24,7 +25,6 @@ import (
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
-	"k8s.io/apimachinery/pkg/util/clock"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	utilfeature "k8s.io/apiserver/pkg/util/feature"
 	featuregatetesting "k8s.io/component-base/featuregate/testing"
@@ -32,6 +32,7 @@ import (
 	podutil "k8s.io/kubernetes/pkg/api/v1/pod"
 	"k8s.io/kubernetes/pkg/controller/daemon/util"
 	"k8s.io/kubernetes/pkg/features"
+	testingclock "k8s.io/utils/clock/testing"
 )
 
 func TestDaemonSetUpdatesPods(t *testing.T) {
@@ -205,12 +206,12 @@ func TestDaemonSetUpdatesAllOldPodsNotReadyMaxSurge(t *testing.T) {
 	manager.dsStore.Update(ds)
 
 	// all old pods are unavailable so should be surged
-	manager.failedPodsBackoff.Clock = clock.NewFakeClock(time.Unix(100, 0))
+	manager.failedPodsBackoff.Clock = testingclock.NewFakeClock(time.Unix(100, 0))
 	clearExpectations(t, manager, ds, podControl)
 	expectSyncDaemonSets(t, manager, ds, podControl, 5, 0, 0)
 
 	// waiting for pods to go ready, old pods are deleted
-	manager.failedPodsBackoff.Clock = clock.NewFakeClock(time.Unix(200, 0))
+	manager.failedPodsBackoff.Clock = testingclock.NewFakeClock(time.Unix(200, 0))
 	clearExpectations(t, manager, ds, podControl)
 	expectSyncDaemonSets(t, manager, ds, podControl, 0, 5, 0)
 
@@ -219,7 +220,7 @@ func TestDaemonSetUpdatesAllOldPodsNotReadyMaxSurge(t *testing.T) {
 	ds.Spec.Template.Spec.Containers[0].Image = "foo3/bar3"
 	manager.dsStore.Update(ds)
 
-	manager.failedPodsBackoff.Clock = clock.NewFakeClock(time.Unix(300, 0))
+	manager.failedPodsBackoff.Clock = testingclock.NewFakeClock(time.Unix(300, 0))
 	clearExpectations(t, manager, ds, podControl)
 	expectSyncDaemonSets(t, manager, ds, podControl, 3, 0, 0)
 
@@ -243,12 +244,12 @@ func TestDaemonSetUpdatesAllOldPodsNotReadyMaxSurge(t *testing.T) {
 
 	// the new pods should still be considered waiting to hit min readiness, so one pod should be created to replace
 	// the deleted old pod
-	manager.failedPodsBackoff.Clock = clock.NewFakeClock(time.Unix(310, 0))
+	manager.failedPodsBackoff.Clock = testingclock.NewFakeClock(time.Unix(310, 0))
 	clearExpectations(t, manager, ds, podControl)
 	expectSyncDaemonSets(t, manager, ds, podControl, 1, 0, 0)
 
 	// the new pods are now considered available, so delete the old pods
-	manager.failedPodsBackoff.Clock = clock.NewFakeClock(time.Unix(320, 0))
+	manager.failedPodsBackoff.Clock = testingclock.NewFakeClock(time.Unix(320, 0))
 	clearExpectations(t, manager, ds, podControl)
 	expectSyncDaemonSets(t, manager, ds, podControl, 1, 3, 0)
 
@@ -259,12 +260,12 @@ func TestDaemonSetUpdatesAllOldPodsNotReadyMaxSurge(t *testing.T) {
 	})
 
 	// the new pods are now considered available, so delete the old pods
-	manager.failedPodsBackoff.Clock = clock.NewFakeClock(time.Unix(340, 0))
+	manager.failedPodsBackoff.Clock = testingclock.NewFakeClock(time.Unix(340, 0))
 	clearExpectations(t, manager, ds, podControl)
 	expectSyncDaemonSets(t, manager, ds, podControl, 0, 2, 0)
 
 	// controller has completed upgrade
-	manager.failedPodsBackoff.Clock = clock.NewFakeClock(time.Unix(350, 0))
+	manager.failedPodsBackoff.Clock = testingclock.NewFakeClock(time.Unix(350, 0))
 	clearExpectations(t, manager, ds, podControl)
 	expectSyncDaemonSets(t, manager, ds, podControl, 0, 0, 0)
 }
@@ -323,7 +324,7 @@ func setPodReadiness(t *testing.T, dsc *daemonSetsController, ready bool, count 
 
 func currentDSHash(dsc *daemonSetsController, ds *apps.DaemonSet) (string, error) {
 	// Construct histories of the DaemonSet, and get the hash of current history
-	cur, _, err := dsc.constructHistory(ds)
+	cur, _, err := dsc.constructHistory(context.TODO(), ds)
 	if err != nil {
 		return "", err
 	}

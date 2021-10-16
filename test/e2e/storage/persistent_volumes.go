@@ -32,7 +32,6 @@ import (
 	"k8s.io/kubernetes/test/e2e/framework"
 	e2epod "k8s.io/kubernetes/test/e2e/framework/pod"
 	e2epv "k8s.io/kubernetes/test/e2e/framework/pv"
-	e2eskipper "k8s.io/kubernetes/test/e2e/framework/skipper"
 	e2estatefulset "k8s.io/kubernetes/test/e2e/framework/statefulset"
 	e2evolume "k8s.io/kubernetes/test/e2e/framework/volume"
 	"k8s.io/kubernetes/test/e2e/storage/utils"
@@ -316,7 +315,12 @@ var _ = utils.SIGDescribe("PersistentVolumes", func() {
 		})
 	})
 
-	ginkgo.Describe("Default StorageClass", func() {
+	// testsuites/multivolume tests can now run with windows nodes
+	// This test is not compatible with windows because the default StorageClass
+	// doesn't have the ntfs parameter, we can't change the status of the cluster
+	// to add a StorageClass that's compatible with windows which is also the
+	// default StorageClass
+	ginkgo.Describe("Default StorageClass [LinuxOnly]", func() {
 		ginkgo.Context("pods that use multiple volumes", func() {
 
 			ginkgo.AfterEach(func() {
@@ -325,7 +329,7 @@ var _ = utils.SIGDescribe("PersistentVolumes", func() {
 
 			ginkgo.It("should be reschedulable [Slow]", func() {
 				// Only run on providers with default storageclass
-				e2eskipper.SkipUnlessProviderIs("openstack", "gce", "gke", "vsphere", "azure")
+				e2epv.SkipIfNoDefaultStorageClass(c)
 
 				numVols := 4
 

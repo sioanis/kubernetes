@@ -119,7 +119,7 @@ func testDevicePlugin(f *framework.Framework, pluginSockDir string) {
 			}
 			initialConfig.FeatureGates[string(features.KubeletPodResources)] = true
 		})
-		ginkgo.It("Verifies the Kubelet device plugin functionality.", func() {
+		ginkgo.It("[Flaky] Verifies the Kubelet device plugin functionality.", func() {
 			ginkgo.By("Wait for node is ready to start with")
 			e2enode.WaitForNodeToBeReady(f.ClientSet, framework.TestContext.NodeName, 5*time.Minute)
 			dp := getSampleDevicePluginPod()
@@ -220,7 +220,7 @@ func testDevicePlugin(f *framework.Framework, pluginSockDir string) {
 
 			restartTime := time.Now()
 			ginkgo.By("Restarting Kubelet")
-			restartKubelet()
+			restartKubelet(true)
 
 			// We need to wait for node to be ready before re-registering stub device plugin.
 			// Otherwise, Kubelet DeviceManager may remove the re-registered sockets after it starts.

@@ -17,7 +17,6 @@ limitations under the License.
 package options
 
 import (
-	"net"
 	"reflect"
 	"sort"
 	"testing"
@@ -59,11 +58,12 @@ import (
 	statefulsetconfig "k8s.io/kubernetes/pkg/controller/statefulset/config"
 	ttlafterfinishedconfig "k8s.io/kubernetes/pkg/controller/ttlafterfinished/config"
 	attachdetachconfig "k8s.io/kubernetes/pkg/controller/volume/attachdetach/config"
+	ephemeralvolumeconfig "k8s.io/kubernetes/pkg/controller/volume/ephemeral/config"
 	persistentvolumeconfig "k8s.io/kubernetes/pkg/controller/volume/persistentvolume/config"
+	netutils "k8s.io/utils/net"
 )
 
 var args = []string{
-	"--address=192.168.4.10",
 	"--allocate-node-cidrs=true",
 	"--attach-detach-reconcile-sync-period=30s",
 	"--cidr-allocator-type=CloudAllocator",
@@ -84,6 +84,7 @@ var args = []string{
 	"--concurrent-deployment-syncs=10",
 	"--concurrent-statefulset-syncs=15",
 	"--concurrent-endpoint-syncs=10",
+	"--concurrent-ephemeralvolume-syncs=10",
 	"--concurrent-service-endpoint-syncs=10",
 	"--concurrent-gc-syncs=30",
 	"--concurrent-namespace-syncs=20",
@@ -137,7 +138,6 @@ var args = []string{
 	"--node-monitor-period=10s",
 	"--node-startup-grace-period=30s",
 	"--pod-eviction-timeout=2m",
-	"--port=10000",
 	"--profiling=false",
 	"--pv-recycler-increment-timeout-nfs=45",
 	"--pv-recycler-minimum-timeout-hostpath=45",
@@ -172,8 +172,7 @@ func TestAddFlags(t *testing.T) {
 	expected := &KubeControllerManagerOptions{
 		Generic: &cmoptions.GenericControllerManagerConfigurationOptions{
 			GenericControllerManagerConfiguration: &cmconfig.GenericControllerManagerConfiguration{
-				Port:            10252,     // Note: InsecureServingOptions.ApplyTo will write the flag value back into the component config
-				Address:         "0.0.0.0", // Note: InsecureServingOptions.ApplyTo will write the flag value back into the component config
+				Address:         "0.0.0.0", // Note: This field should have no effect in CM now, and "0.0.0.0" is the default value.
 				MinResyncPeriod: metav1.Duration{Duration: 8 * time.Hour},
 				ClientConnection: componentbaseconfig.ClientConnectionConfiguration{
 					ContentType: "application/json",
@@ -291,6 +290,11 @@ func TestAddFlags(t *testing.T) {
 				MirroringMaxEndpointsPerSubset:          1000,
 			},
 		},
+		EphemeralVolumeController: &EphemeralVolumeControllerOptions{
+			&ephemeralvolumeconfig.EphemeralVolumeControllerConfiguration{
+				ConcurrentEphemeralVolumeSyncs: 10,
+			},
+		},
 		GarbageCollectorController: &GarbageCollectorControllerOptions{
 			&garbagecollectorconfig.GarbageCollectorControllerConfiguration{
 				ConcurrentGCSyncs: 30,
@@ -309,7 +313,6 @@ func TestAddFlags(t *testing.T) {
 				HorizontalPodAutoscalerCPUInitializationPeriod:      metav1.Duration{Duration: 90 * time.Second},
 				HorizontalPodAutoscalerInitialReadinessDelay:        metav1.Duration{Duration: 50 * time.Second},
 				HorizontalPodAutoscalerTolerance:                    0.1,
-				HorizontalPodAutoscalerUseRESTClients:               true,
 			},
 		},
 		JobController: &JobControllerOptions{
@@ -400,21 +403,16 @@ func TestAddFlags(t *testing.T) {
 		},
 		SecureServing: (&apiserveroptions.SecureServingOptions{
 			BindPort:    10001,
-			BindAddress: net.ParseIP("192.168.4.21"),
+			BindAddress: netutils.ParseIPSloppy("192.168.4.21"),
 			ServerCert: apiserveroptions.GeneratableKeyCert{
 				CertDirectory: "/a/b/c",
 				PairName:      "kube-controller-manager",
 			},
 			HTTP2MaxStreamsPerConnection: 47,
 		}).WithLoopback(),
-		InsecureServing: (&apiserveroptions.DeprecatedInsecureServingOptions{
-			BindAddress: net.ParseIP("192.168.4.10"),
-			BindPort:    int(10000),
-			BindNetwork: "tcp",
-		}).WithLoopback(),
 		Authentication: &apiserveroptions.DelegatingAuthenticationOptions{
 			CacheTTL:            10 * time.Second,
-			ClientTimeout:       10 * time.Second,
+			TokenRequestTimeout: 10 * time.Second,
 			WebhookRetryBackoff: apiserveroptions.DefaultAuthWebhookRetryBackoff(),
 			ClientCert:          apiserveroptions.ClientCertAuthenticationOptions{},
 			RequestHeader: apiserveroptions.RequestHeaderAuthenticationOptions{
@@ -464,8 +462,7 @@ func TestApplyTo(t *testing.T) {
 	expected := &kubecontrollerconfig.Config{
 		ComponentConfig: kubectrlmgrconfig.KubeControllerManagerConfiguration{
 			Generic: cmconfig.GenericControllerManagerConfiguration{
-				Port:            10252,     // Note: InsecureServingOptions.ApplyTo will write the flag value back into the component config
-				Address:         "0.0.0.0", // Note: InsecureServingOptions.ApplyTo will write the flag value back into the component config
+				Address:         "0.0.0.0", // Note: This field should have no effect in CM now, and "0.0.0.0" is the default value.
 				MinResyncPeriod: metav1.Duration{Duration: 8 * time.Hour},
 				ClientConnection: componentbaseconfig.ClientConnectionConfiguration{
 					ContentType: "application/json",
@@ -555,6 +552,9 @@ func TestApplyTo(t *testing.T) {
 				MirroringConcurrentServiceEndpointSyncs: 2,
 				MirroringMaxEndpointsPerSubset:          1000,
 			},
+			EphemeralVolumeController: ephemeralvolumeconfig.EphemeralVolumeControllerConfiguration{
+				ConcurrentEphemeralVolumeSyncs: 10,
+			},
 			GarbageCollectorController: garbagecollectorconfig.GarbageCollectorControllerConfiguration{
 				ConcurrentGCSyncs: 30,
 				GCIgnoredResources: []garbagecollectorconfig.GroupResource{
@@ -570,7 +570,6 @@ func TestApplyTo(t *testing.T) {
 				HorizontalPodAutoscalerCPUInitializationPeriod:      metav1.Duration{Duration: 90 * time.Second},
 				HorizontalPodAutoscalerInitialReadinessDelay:        metav1.Duration{Duration: 50 * time.Second},
 				HorizontalPodAutoscalerTolerance:                    0.1,
-				HorizontalPodAutoscalerUseRESTClients:               true,
 			},
 			JobController: jobconfig.JobControllerConfiguration{
 				ConcurrentJobSyncs: 5,

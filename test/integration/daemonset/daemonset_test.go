@@ -52,8 +52,8 @@ import (
 var zero = int64(0)
 
 func setup(t *testing.T) (*httptest.Server, framework.CloseFunc, *daemon.DaemonSetsController, informers.SharedInformerFactory, clientset.Interface) {
-	masterConfig := framework.NewIntegrationTestMasterConfig()
-	_, server, closeFn := framework.RunAMaster(masterConfig)
+	controlPlaneConfig := framework.NewIntegrationTestControlPlaneConfig()
+	_, server, closeFn := framework.RunAnAPIServer(controlPlaneConfig)
 
 	config := restclient.Config{Host: server.URL}
 	clientSet, err := clientset.NewForConfig(&config)
@@ -90,6 +90,7 @@ func setupScheduler(
 	sched, err := scheduler.New(
 		cs,
 		informerFactory,
+		nil,
 		profile.NewRecorderFactory(eventBroadcaster),
 		ctx.Done(),
 	)
@@ -437,7 +438,7 @@ func TestOneNodeDaemonLaunchesPod(t *testing.T) {
 		setupScheduler(ctx, t, clientset, informers)
 
 		informers.Start(ctx.Done())
-		go dc.Run(5, ctx.Done())
+		go dc.Run(ctx, 5)
 
 		ds := newDaemonSet("foo", ns.Name)
 		ds.Spec.UpdateStrategy = *strategy
@@ -473,7 +474,7 @@ func TestSimpleDaemonSetLaunchesPods(t *testing.T) {
 		defer cancel()
 
 		informers.Start(ctx.Done())
-		go dc.Run(5, ctx.Done())
+		go dc.Run(ctx, 5)
 
 		// Start Scheduler
 		setupScheduler(ctx, t, clientset, informers)
@@ -509,7 +510,7 @@ func TestDaemonSetWithNodeSelectorLaunchesPods(t *testing.T) {
 		defer cancel()
 
 		informers.Start(ctx.Done())
-		go dc.Run(5, ctx.Done())
+		go dc.Run(ctx, 5)
 
 		// Start Scheduler
 		setupScheduler(ctx, t, clientset, informers)
@@ -578,7 +579,7 @@ func TestNotReadyNodeDaemonDoesLaunchPod(t *testing.T) {
 		defer cancel()
 
 		informers.Start(ctx.Done())
-		go dc.Run(5, ctx.Done())
+		go dc.Run(ctx, 5)
 
 		// Start Scheduler
 		setupScheduler(ctx, t, clientset, informers)
@@ -625,7 +626,7 @@ func TestInsufficientCapacityNode(t *testing.T) {
 		defer cancel()
 
 		informers.Start(ctx.Done())
-		go dc.Run(5, ctx.Done())
+		go dc.Run(ctx, 5)
 
 		// Start Scheduler
 		setupScheduler(ctx, t, clientset, informers)
@@ -688,7 +689,7 @@ func TestLaunchWithHashCollision(t *testing.T) {
 	defer cancel()
 
 	informers.Start(ctx.Done())
-	go dc.Run(5, ctx.Done())
+	go dc.Run(ctx, 5)
 
 	// Start Scheduler
 	setupScheduler(ctx, t, clientset, informers)
@@ -798,7 +799,7 @@ func TestTaintedNode(t *testing.T) {
 		defer cancel()
 
 		informers.Start(ctx.Done())
-		go dc.Run(5, ctx.Done())
+		go dc.Run(ctx, 5)
 
 		// Start Scheduler
 		setupScheduler(ctx, t, clientset, informers)
@@ -863,7 +864,7 @@ func TestUnschedulableNodeDaemonDoesLaunchPod(t *testing.T) {
 		defer cancel()
 
 		informers.Start(ctx.Done())
-		go dc.Run(5, ctx.Done())
+		go dc.Run(ctx, 5)
 
 		// Start Scheduler
 		setupScheduler(ctx, t, clientset, informers)
@@ -871,7 +872,7 @@ func TestUnschedulableNodeDaemonDoesLaunchPod(t *testing.T) {
 		ds := newDaemonSet("foo", ns.Name)
 		ds.Spec.UpdateStrategy = *strategy
 		ds.Spec.Template.Spec.HostNetwork = true
-		_, err := dsClient.Create(context.TODO(), ds, metav1.CreateOptions{})
+		_, err := dsClient.Create(ctx, ds, metav1.CreateOptions{})
 		if err != nil {
 			t.Fatalf("Failed to create DaemonSet: %v", err)
 		}
@@ -888,7 +889,7 @@ func TestUnschedulableNodeDaemonDoesLaunchPod(t *testing.T) {
 			},
 		}
 
-		_, err = nodeClient.Create(context.TODO(), node, metav1.CreateOptions{})
+		_, err = nodeClient.Create(ctx, node, metav1.CreateOptions{})
 		if err != nil {
 			t.Fatalf("Failed to create node: %v", err)
 		}
@@ -906,7 +907,7 @@ func TestUnschedulableNodeDaemonDoesLaunchPod(t *testing.T) {
 			},
 		}
 
-		_, err = nodeClient.Create(context.TODO(), nodeNU, metav1.CreateOptions{})
+		_, err = nodeClient.Create(ctx, nodeNU, metav1.CreateOptions{})
 		if err != nil {
 			t.Fatalf("Failed to create node: %v", err)
 		}

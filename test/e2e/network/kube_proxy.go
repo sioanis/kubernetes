@@ -43,7 +43,6 @@ var kubeProxyE2eImage = imageutils.GetE2EImage(imageutils.Agnhost)
 
 var _ = common.SIGDescribe("KubeProxy", func() {
 	const (
-		testDaemonHTTPPort    = 11301
 		testDaemonTCPPort     = 11302
 		postFinTimeoutSeconds = 30
 	)
@@ -73,6 +72,7 @@ var _ = common.SIGDescribe("KubeProxy", func() {
 		}
 
 		ips := e2enode.GetAddressesByTypeAndFamily(&nodes.Items[0], v1.NodeInternalIP, family)
+		framework.ExpectNotEqual(len(ips), 0)
 
 		clientNodeInfo := NodeInfo{
 			node:   &nodes.Items[0],
@@ -81,6 +81,7 @@ var _ = common.SIGDescribe("KubeProxy", func() {
 		}
 
 		ips = e2enode.GetAddressesByTypeAndFamily(&nodes.Items[1], v1.NodeInternalIP, family)
+		framework.ExpectNotEqual(len(ips), 0)
 
 		serverNodeInfo := NodeInfo{
 			node:   &nodes.Items[1],
@@ -184,7 +185,7 @@ var _ = common.SIGDescribe("KubeProxy", func() {
 		fr.PodClient().CreateSync(serverPodSpec)
 
 		// The server should be listening before spawning the client pod
-		if readyErr := e2epod.WaitForPodsReady(fr.ClientSet, fr.Namespace.Name, serverPodSpec.Name, 0); readyErr != nil {
+		if readyErr := e2epod.WaitTimeoutForPodReadyInNamespace(fr.ClientSet, serverPodSpec.Name, fr.Namespace.Name, framework.PodStartTimeout); readyErr != nil {
 			framework.Failf("error waiting for server pod %s to be ready: %v", serverPodSpec.Name, readyErr)
 		}
 		// Connect to the server and leak the connection
