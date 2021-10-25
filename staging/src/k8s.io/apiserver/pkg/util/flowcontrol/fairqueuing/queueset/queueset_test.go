@@ -374,7 +374,7 @@ func (uss *uniformScenarioState) finalReview() {
 	}
 	if uss.evalExecutingMetrics && len(uss.expectedExecuting) > 0 {
 		e := `
-				# HELP apiserver_flowcontrol_current_executing_requests [ALPHA] Number of requests currently executing in the API Priority and Fairness system
+				# HELP apiserver_flowcontrol_current_executing_requests [ALPHA] Number of requests in regular execution phase in the API Priority and Fairness system
 				# TYPE apiserver_flowcontrol_current_executing_requests gauge
 ` + uss.expectedExecuting
 		err := metrics.GatherAndCompare(e, "apiserver_flowcontrol_current_executing_requests")
@@ -386,7 +386,7 @@ func (uss *uniformScenarioState) finalReview() {
 	}
 	if uss.evalExecutingMetrics && len(uss.expectedConcurrencyInUse) > 0 {
 		e := `
-				# HELP apiserver_flowcontrol_request_concurrency_in_use [ALPHA] Concurrency (number of seats) occupided by the currently executing requests in the API Priority and Fairness system
+				# HELP apiserver_flowcontrol_request_concurrency_in_use [ALPHA] Concurrency (number of seats) occupided by the currently executing (all phases count) requests in the API Priority and Fairness system
 				# TYPE apiserver_flowcontrol_request_concurrency_in_use gauge
 ` + uss.expectedConcurrencyInUse
 		err := metrics.GatherAndCompare(e, "apiserver_flowcontrol_request_concurrency_in_use")
@@ -1308,7 +1308,7 @@ func TestFindDispatchQueueLocked(t *testing.T) {
 					minQueueExpected = test.queues[queueIdx]
 				}
 
-				minQueueGot := qs.findDispatchQueueLocked()
+				minQueueGot, reqGot := qs.findDispatchQueueLocked()
 				if minQueueExpected != minQueueGot {
 					t.Errorf("Expected queue: %#v, but got: %#v", minQueueExpected, minQueueGot)
 				}
@@ -1316,6 +1316,10 @@ func TestFindDispatchQueueLocked(t *testing.T) {
 				robinIndexExpected := test.robinIndexExpected[i]
 				if robinIndexExpected != qs.robinIndex {
 					t.Errorf("Expected robin index: %d for attempt: %d, but got: %d", robinIndexExpected, attempt, qs.robinIndex)
+				}
+
+				if (reqGot == nil) != (minQueueGot == nil) {
+					t.Errorf("reqGot=%p but minQueueGot=%p", reqGot, minQueueGot)
 				}
 			}
 		})
@@ -1451,7 +1455,7 @@ func TestRequestWork(t *testing.T) {
 func newFIFO(requests ...*request) fifo {
 	l := newRequestFIFO()
 	for i := range requests {
-		l.Enqueue(requests[i])
+		requests[i].removeFromQueueLocked = l.Enqueue(requests[i])
 	}
 	return l
 }
