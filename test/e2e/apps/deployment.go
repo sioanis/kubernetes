@@ -160,6 +160,7 @@ var _ = SIGDescribe("Deployment", func() {
 	})
 	ginkgo.It("should not disrupt a cloud load-balancer's connectivity during rollout", func() {
 		e2eskipper.SkipUnlessProviderIs("aws", "azure", "gce", "gke")
+		e2eskipper.SkipIfIPv6("aws")
 		nodes, err := e2enode.GetReadySchedulableNodes(c)
 		framework.ExpectNoError(err)
 		e2eskipper.SkipUnlessAtLeast(len(nodes.Items), 3, "load-balancer test requires at least 3 schedulable nodes")
@@ -192,9 +193,6 @@ var _ = SIGDescribe("Deployment", func() {
 		testDeploymentNoReplicas := int32(0)
 		testDeploymentLabels := map[string]string{"test-deployment-static": "true"}
 		testDeploymentLabelsFlat := "test-deployment-static=true"
-		testDeploymentLabelSelectors := metav1.LabelSelector{
-			MatchLabels: testDeploymentLabels,
-		}
 		w := &cache.ListWatch{
 			WatchFunc: func(options metav1.ListOptions) (watch.Interface, error) {
 				options.LabelSelector = testDeploymentLabelsFlat
@@ -205,29 +203,13 @@ var _ = SIGDescribe("Deployment", func() {
 		framework.ExpectNoError(err, "failed to list Deployments")
 
 		ginkgo.By("creating a Deployment")
-		testDeployment := appsv1.Deployment{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:   testDeploymentName,
-				Labels: map[string]string{"test-deployment-static": "true"},
-			},
-			Spec: appsv1.DeploymentSpec{
-				Replicas: &testDeploymentDefaultReplicas,
-				Selector: &testDeploymentLabelSelectors,
-				Template: v1.PodTemplateSpec{
-					ObjectMeta: metav1.ObjectMeta{
-						Labels: testDeploymentLabelSelectors.MatchLabels,
-					},
-					Spec: v1.PodSpec{
-						TerminationGracePeriodSeconds: &one,
-						Containers: []v1.Container{{
-							Name:  testDeploymentName,
-							Image: testDeploymentInitialImage,
-						}},
-					},
-				},
-			},
-		}
-		_, err = f.ClientSet.AppsV1().Deployments(testNamespaceName).Create(context.TODO(), &testDeployment, metav1.CreateOptions{})
+		testDeployment := e2edeployment.NewDeployment(
+			testDeploymentName, testDeploymentDefaultReplicas, testDeploymentLabels,
+			testDeploymentName, testDeploymentInitialImage, appsv1.RollingUpdateDeploymentStrategyType)
+		testDeployment.ObjectMeta.Labels = map[string]string{"test-deployment-static": "true"}
+		testDeployment.Spec.Template.Spec.TerminationGracePeriodSeconds = &one
+
+		_, err = f.ClientSet.AppsV1().Deployments(testNamespaceName).Create(context.TODO(), testDeployment, metav1.CreateOptions{})
 		framework.ExpectNoError(err, "failed to create Deployment %v in namespace %v", testDeploymentName, testNamespaceName)
 
 		ginkgo.By("waiting for Deployment to be created")

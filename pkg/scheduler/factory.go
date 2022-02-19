@@ -73,6 +73,8 @@ type Configurator struct {
 
 	podMaxBackoffSeconds int64
 
+	podMaxUnschedulableQDuration time.Duration
+
 	profiles          []schedulerapi.KubeSchedulerProfile
 	registry          frameworkruntime.Registry
 	nodeInfoSnapshot  *internalcache.Snapshot
@@ -120,7 +122,7 @@ func (c *Configurator) create() (*Scheduler, error) {
 			prof := &c.profiles[i]
 			var found = false
 			for k := range prof.PluginConfig {
-				if prof.PluginConfig[k].Name == noderesources.FitName {
+				if prof.PluginConfig[k].Name == noderesources.Name {
 					// Update the existing args
 					pc := &prof.PluginConfig[k]
 					args, ok := pc.Args.(*schedulerapi.NodeResourcesFitArgs)
@@ -168,6 +170,7 @@ func (c *Configurator) create() (*Scheduler, error) {
 		internalqueue.WithPodMaxBackoffDuration(time.Duration(c.podMaxBackoffSeconds)*time.Second),
 		internalqueue.WithPodNominator(nominator),
 		internalqueue.WithClusterEventMap(c.clusterEventMap),
+		internalqueue.WithPodMaxUnschedulableQDuration(c.podMaxUnschedulableQDuration),
 	)
 
 	// Setup cache debugger.

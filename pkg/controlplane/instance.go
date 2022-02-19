@@ -31,6 +31,7 @@ import (
 	authenticationv1 "k8s.io/api/authentication/v1"
 	authorizationapiv1 "k8s.io/api/authorization/v1"
 	autoscalingapiv1 "k8s.io/api/autoscaling/v1"
+	autoscalingapiv2 "k8s.io/api/autoscaling/v2"
 	autoscalingapiv2beta1 "k8s.io/api/autoscaling/v2beta1"
 	autoscalingapiv2beta2 "k8s.io/api/autoscaling/v2beta2"
 	batchapiv1 "k8s.io/api/batch/v1"
@@ -273,9 +274,9 @@ func (c *Config) createEndpointReconciler() reconcilers.EndpointReconciler {
 	klog.Infof("Using reconciler: %v", c.ExtraConfig.EndpointReconcilerType)
 	switch c.ExtraConfig.EndpointReconcilerType {
 	// there are numerous test dependencies that depend on a default controller
-	case "", reconcilers.MasterCountReconcilerType:
+	case reconcilers.MasterCountReconcilerType:
 		return c.createMasterCountReconciler()
-	case reconcilers.LeaseEndpointReconcilerType:
+	case "", reconcilers.LeaseEndpointReconcilerType:
 		return c.createLeaseReconciler()
 	case reconcilers.NoneEndpointReconcilerType:
 		return c.createNoneReconciler()
@@ -433,7 +434,7 @@ func (c completedConfig) New(delegationTarget genericapiserver.DelegationTarget)
 		rbacrest.RESTStorageProvider{Authorizer: c.GenericConfig.Authorization.Authorizer},
 		schedulingrest.RESTStorageProvider{},
 		storagerest.RESTStorageProvider{},
-		flowcontrolrest.RESTStorageProvider{},
+		flowcontrolrest.RESTStorageProvider{InformerFactory: c.GenericConfig.SharedInformerFactory},
 		// keep apps after extensions so legacy clients resolve the extensions versions of shared resource names.
 		// See https://github.com/kubernetes/kubernetes/issues/42392
 		appsrest.StorageProvider{},
@@ -531,7 +532,10 @@ func (m *Instance) InstallLegacyAPI(c *completedConfig, restOptionsGetter generi
 
 	controllerName := "bootstrap-controller"
 	coreClient := corev1client.NewForConfigOrDie(c.GenericConfig.LoopbackClientConfig)
-	bootstrapController := c.NewBootstrapController(legacyRESTStorage, coreClient, coreClient, coreClient, coreClient.RESTClient())
+	bootstrapController, err := c.NewBootstrapController(legacyRESTStorage, coreClient, coreClient, coreClient, coreClient.RESTClient())
+	if err != nil {
+		return fmt.Errorf("error creating bootstrap controller: %v", err)
+	}
 	m.GenericAPIServer.AddPostStartHookOrDie(controllerName, bootstrapController.PostStartHook)
 	m.GenericAPIServer.AddPreShutdownHookOrDie(controllerName, bootstrapController.PreShutdownHook)
 
@@ -559,7 +563,7 @@ func (m *Instance) InstallAPIs(apiResourceConfigSource serverstorage.APIResource
 
 	for _, restStorageBuilder := range restStorageProviders {
 		groupName := restStorageBuilder.GroupName()
-		if !apiResourceConfigSource.AnyVersionForGroupEnabled(groupName) {
+		if !apiResourceConfigSource.AnyResourceForGroupEnabled(groupName) {
 			klog.V(1).Infof("Skipping disabled API group %q.", groupName)
 			continue
 		}
@@ -646,6 +650,7 @@ func DefaultAPIResourceConfigSource() *serverstorage.ResourceConfig {
 		authenticationv1.SchemeGroupVersion,
 		authorizationapiv1.SchemeGroupVersion,
 		autoscalingapiv1.SchemeGroupVersion,
+		autoscalingapiv2.SchemeGroupVersion,
 		autoscalingapiv2beta1.SchemeGroupVersion,
 		autoscalingapiv2beta2.SchemeGroupVersion,
 		batchapiv1.SchemeGroupVersion,

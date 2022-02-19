@@ -23,7 +23,7 @@ import (
 	"context"
 	"encoding/binary"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"net"
 	"os/exec"
 	"regexp"
@@ -74,7 +74,7 @@ func pfPod(expectedClientData, chunks, chunkSize, chunkIntervalMillis string, bi
 					Image: imageutils.GetE2EImage(imageutils.Agnhost),
 					Args:  []string{"netexec"},
 					ReadinessProbe: &v1.Probe{
-						Handler: v1.Handler{
+						ProbeHandler: v1.ProbeHandler{
 							Exec: &v1.ExecAction{
 								Command: []string{
 									"sh", "-c", "netstat -na | grep LISTEN | grep -v 8080 | grep 80",
@@ -231,7 +231,7 @@ func doTestConnectSendDisconnect(bindAddress string, f *framework.Framework) {
 	}()
 
 	ginkgo.By("Reading data from the local port")
-	fromServer, err := ioutil.ReadAll(conn)
+	fromServer, err := io.ReadAll(conn)
 	if err != nil {
 		framework.Failf("Unexpected error reading data from the server: %v", err)
 	}
@@ -323,7 +323,7 @@ func doTestMustConnectSendDisconnect(bindAddress string, f *framework.Framework)
 	fmt.Fprint(conn, "abc")
 
 	ginkgo.By("Reading data from the local port")
-	fromServer, err := ioutil.ReadAll(conn)
+	fromServer, err := io.ReadAll(conn)
 	if err != nil {
 		framework.Failf("Unexpected error reading data from the server: %v", err)
 	}

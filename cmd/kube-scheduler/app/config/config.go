@@ -17,6 +17,8 @@ limitations under the License.
 package config
 
 import (
+	"time"
+
 	apiserver "k8s.io/apiserver/pkg/server"
 	"k8s.io/client-go/dynamic/dynamicinformer"
 	"k8s.io/client-go/informers"
@@ -44,11 +46,17 @@ type Config struct {
 	InformerFactory    informers.SharedInformerFactory
 	DynInformerFactory dynamicinformer.DynamicSharedInformerFactory
 
-	//lint:ignore SA1019 this deprecated field still needs to be used for now. It will be removed once the migration is done.
+	//nolint:staticcheck // SA1019 this deprecated field still needs to be used for now. It will be removed once the migration is done.
 	EventBroadcaster events.EventBroadcasterAdapter
 
 	// LeaderElection is optional.
 	LeaderElection *leaderelection.LeaderElectionConfig
+
+	// PodMaxUnschedulableQDuration is the maximum time a pod can stay in
+	// unschedulableQ. If a pod stays in unschedulableQ for longer than this
+	// value, the pod will be moved from unschedulableQ to backoffQ or activeQ.
+	// If this value is empty, the default value (60s) will be used.
+	PodMaxUnschedulableQDuration time.Duration
 }
 
 type completedConfig struct {

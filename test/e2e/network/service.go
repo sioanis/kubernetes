@@ -328,7 +328,11 @@ func verifyServeHostnameServiceUp(c clientset.Interface, ns string, expectedPods
 
 	// verify service from pod
 	cmdFunc := func(podName string) string {
-		wgetCmd := "wget -q -T 1 -O -"
+		wgetCmd := "wget -q -O -"
+		// Command 'wget' in Windows image may not support option 'T'
+		if !framework.NodeOSDistroIs("windows") {
+			wgetCmd += " -T 1"
+		}
 		serviceIPPort := net.JoinHostPort(serviceIP, strconv.Itoa(servicePort))
 		cmd := fmt.Sprintf("for i in $(seq 1 %d); do %s http://%s 2>&1 || true; echo; done",
 			50*len(expectedPods), wgetCmd, serviceIPPort)
@@ -1684,14 +1688,14 @@ var _ = common.SIGDescribe("Services", func() {
 			Image: t.Image,
 			Ports: []v1.ContainerPort{{ContainerPort: int32(port), Protocol: v1.ProtocolTCP}},
 			ReadinessProbe: &v1.Probe{
-				Handler: v1.Handler{
+				ProbeHandler: v1.ProbeHandler{
 					Exec: &v1.ExecAction{
 						Command: []string{"/bin/false"},
 					},
 				},
 			},
 			Lifecycle: &v1.Lifecycle{
-				PreStop: &v1.Handler{
+				PreStop: &v1.LifecycleHandler{
 					Exec: &v1.ExecAction{
 						Command: []string{"/bin/sleep", fmt.Sprintf("%d", terminateSeconds)},
 					},
@@ -2214,8 +2218,7 @@ var _ = common.SIGDescribe("Services", func() {
 		}
 		node0 := nodes.Items[0]
 		node1 := nodes.Items[1]
-		// split node name to ensure only hostname (and not FQDN) is compared with return from agnhost's /hostname endpoint.
-		node0Hostname := strings.Split(node0.Name, ".")[0]
+
 		serviceName := "svc-itp"
 		ns := f.Namespace.Name
 		servicePort := 80
@@ -2266,7 +2269,7 @@ var _ = common.SIGDescribe("Services", func() {
 		for i := 0; i < 5; i++ {
 			// the first pause pod should be on the same node as the webserver, so it can connect to the local pod using clusterIP
 			// note that the expected hostname is the node name because the backend pod is on host network
-			execHostnameTest(*pausePod0, serviceAddress, node0Hostname)
+			execHostnameTest(*pausePod0, serviceAddress, node0.Name)
 
 			// the second pause pod is on a different node, so it should see a connection error every time
 			cmd := fmt.Sprintf(`curl -q -s --connect-timeout 5 %s/hostname`, serviceAddress)
@@ -2295,7 +2298,7 @@ var _ = common.SIGDescribe("Services", func() {
 		for i := 0; i < 5; i++ {
 			// the first pause pod should be on the same node as the webserver, so it can connect to the local pod using clusterIP
 			// note that the expected hostname is the node name because the backend pod is on host network
-			execHostnameTest(*pausePod2, serviceAddress, node0Hostname)
+			execHostnameTest(*pausePod2, serviceAddress, node0.Name)
 
 			// the second pause pod is on a different node, so it should see a connection error every time
 			cmd := fmt.Sprintf(`curl -q -s --connect-timeout 5 %s/hostname`, serviceAddress)
@@ -2321,7 +2324,9 @@ var _ = common.SIGDescribe("Services", func() {
 			}
 		}
 
-		framework.ExpectEqual(foundSvc, true, "could not find service 'kubernetes' in service list in all namespaces")
+		if !foundSvc {
+			framework.Fail("could not find service 'kubernetes' in service list in all namespaces")
+		}
 	})
 
 	/*
@@ -2395,7 +2400,9 @@ var _ = common.SIGDescribe("Services", func() {
 				break
 			}
 		}
-		framework.ExpectEqual(eventFound, true, "unable to find Endpoint Service in list of Endpoints")
+		if !eventFound {
+			framework.Fail("unable to find Endpoint Service in list of Endpoints")
+		}
 
 		ginkgo.By("updating the Endpoint")
 		foundEndpoint.ObjectMeta.Labels["test-service"] = "updated"
@@ -2730,6 +2737,90 @@ var _ = common.SIGDescribe("Services", func() {
 		framework.ExpectNoError(err, "failed to delete Service %v in namespace %v", testService.ObjectMeta.Name, ns)
 		framework.Logf("Service %s deleted", testSvcName)
 	})
+
+	/*
+		Release: v1.23
+		Testname: Service, deletes a collection of services
+		Description: Create three services with the required
+		labels and ports. It MUST locate three services in the
+		test namespace. It MUST succeed at deleting a collection
+		of services via a label selector. It MUST locate only
+		one service after deleting the service collection.
+	*/
+	framework.ConformanceIt("should delete a collection of services", func() {
+
+		ns := f.Namespace.Name
+		svcClient := f.ClientSet.CoreV1().Services(ns)
+		svcResource := schema.GroupVersionResource{Group: "", Version: "v1", Resource: "services"}
+		svcDynamicClient := f.DynamicClient.Resource(svcResource).Namespace(ns)
+
+		svcLabel := map[string]string{"e2e-test-service": "delete"}
+		deleteLabel := labels.SelectorFromSet(svcLabel).String()
+
+		ginkgo.By("creating a collection of services")
+
+		testServices := []struct {
+			name  string
+			label map[string]string
+			port  int
+		}{
+			{
+				name:  "e2e-svc-a-" + utilrand.String(5),
+				label: map[string]string{"e2e-test-service": "delete"},
+				port:  8001,
+			},
+			{
+				name:  "e2e-svc-b-" + utilrand.String(5),
+				label: map[string]string{"e2e-test-service": "delete"},
+				port:  8002,
+			},
+			{
+				name:  "e2e-svc-c-" + utilrand.String(5),
+				label: map[string]string{"e2e-test-service": "keep"},
+				port:  8003,
+			},
+		}
+
+		for _, testService := range testServices {
+			func() {
+				framework.Logf("Creating %s", testService.name)
+
+				svc := v1.Service{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:   testService.name,
+						Labels: testService.label,
+					},
+					Spec: v1.ServiceSpec{
+						Type: "ClusterIP",
+						Ports: []v1.ServicePort{{
+							Name:       "http",
+							Protocol:   v1.ProtocolTCP,
+							Port:       int32(testService.port),
+							TargetPort: intstr.FromInt(testService.port),
+						}},
+					},
+				}
+				_, err := svcClient.Create(context.TODO(), &svc, metav1.CreateOptions{})
+				framework.ExpectNoError(err, "failed to create Service")
+
+			}()
+		}
+
+		svcList, err := cs.CoreV1().Services(ns).List(context.TODO(), metav1.ListOptions{})
+		framework.ExpectNoError(err, "failed to list Services")
+		framework.ExpectEqual(len(svcList.Items), 3, "Required count of services out of sync")
+
+		ginkgo.By("deleting service collection")
+		err = svcDynamicClient.DeleteCollection(context.TODO(), metav1.DeleteOptions{}, metav1.ListOptions{LabelSelector: deleteLabel})
+		framework.ExpectNoError(err, "failed to delete service collection. %v", err)
+
+		svcList, err = cs.CoreV1().Services(ns).List(context.TODO(), metav1.ListOptions{})
+		framework.ExpectNoError(err, "failed to list Services")
+		framework.ExpectEqual(len(svcList.Items), 1, "Required count of services out of sync")
+
+		framework.Logf("Collection of services has been deleted")
+	})
+
 })
 
 // execAffinityTestForSessionAffinityTimeout is a helper function that wrap the logic of

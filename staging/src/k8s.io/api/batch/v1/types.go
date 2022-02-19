@@ -71,6 +71,7 @@ type JobList struct {
 }
 
 // CompletionMode specifies how Pod completions of a Job are tracked.
+// +enum
 type CompletionMode string
 
 const (
@@ -189,9 +190,6 @@ type JobSpec struct {
 	// Suspending a Job will reset the StartTime field of the Job, effectively
 	// resetting the ActiveDeadlineSeconds timer too. Defaults to false.
 	//
-	// This field is beta-level, gated by SuspendJob feature flag (enabled by
-	// default).
-	//
 	// +optional
 	Suspend *bool `json:"suspend,omitempty" protobuf:"varint,10,opt,name=suspend"`
 }
@@ -225,7 +223,7 @@ type JobStatus struct {
 	// +optional
 	CompletionTime *metav1.Time `json:"completionTime,omitempty" protobuf:"bytes,3,opt,name=completionTime"`
 
-	// The number of actively running pods.
+	// The number of pending and running pods.
 	// +optional
 	Active int32 `json:"active,omitempty" protobuf:"varint,4,opt,name=active"`
 
@@ -265,6 +263,13 @@ type JobStatus struct {
 	// remains null.
 	// +optional
 	UncountedTerminatedPods *UncountedTerminatedPods `json:"uncountedTerminatedPods,omitempty" protobuf:"bytes,8,opt,name=uncountedTerminatedPods"`
+
+	// The number of pods which have a Ready condition.
+	//
+	// This field is alpha-level. The job controller populates the field when
+	// the feature gate JobReadyPods is enabled (disabled by default).
+	// +optional
+	Ready *int32 `json:"ready,omitempty" protobuf:"varint,9,opt,name=ready"`
 }
 
 // UncountedTerminatedPods holds UIDs of Pods that have terminated but haven't
@@ -281,6 +286,7 @@ type UncountedTerminatedPods struct {
 	Failed []types.UID `json:"failed,omitempty" protobuf:"bytes,2,rep,name=failed,casttype=k8s.io/apimachinery/pkg/types.UID"`
 }
 
+// +enum
 type JobConditionType string
 
 // These are valid conditions of a job.
@@ -405,6 +411,7 @@ type CronJobSpec struct {
 // Only one of the following concurrent policies may be specified.
 // If none of the following policies is specified, the default one
 // is AllowConcurrent.
+// +enum
 type ConcurrencyPolicy string
 
 const (

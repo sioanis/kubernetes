@@ -19,6 +19,7 @@ package storage
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/onsi/ginkgo"
@@ -65,6 +66,7 @@ var _ = utils.SIGDescribe("[Serial] Volume metrics", func() {
 		// and the underlying storage driver and therefore don't pass
 		// with other kinds of clusters and drivers.
 		e2eskipper.SkipUnlessProviderIs("gce", "gke", "aws")
+		e2epv.SkipIfNoDefaultStorageClass(c)
 		defaultScName, err = e2epv.GetDefaultStorageClassName(c)
 		framework.ExpectNoError(err)
 
@@ -142,7 +144,6 @@ var _ = utils.SIGDescribe("[Serial] Volume metrics", func() {
 		err = e2epod.WaitTimeoutForPodRunningInNamespace(c, pod.Name, pod.Namespace, f.Timeouts.PodStart)
 		framework.ExpectNoError(err, "Error starting pod %s", pod.Name)
 
-		framework.Logf("Deleting pod %q/%q", pod.Namespace, pod.Name)
 		framework.ExpectNoError(e2epod.DeletePodWithWait(c, pod))
 
 		updatedStorageMetrics := waitForDetachAndGrabMetrics(storageOpMetrics, metricsGrabber, pluginName)
@@ -150,7 +151,7 @@ var _ = utils.SIGDescribe("[Serial] Volume metrics", func() {
 		framework.ExpectNotEqual(len(updatedStorageMetrics.latencyMetrics), 0, "Error fetching c-m updated storage metrics")
 		framework.ExpectNotEqual(len(updatedStorageMetrics.statusMetrics), 0, "Error fetching c-m updated storage metrics")
 
-		volumeOperations := []string{"volume_provision", "volume_detach", "volume_attach"}
+		volumeOperations := []string{"volume_detach", "volume_attach"}
 
 		for _, volumeOp := range volumeOperations {
 			verifyMetricCount(storageOpMetrics, updatedStorageMetrics, volumeOp, false)
@@ -166,12 +167,6 @@ var _ = utils.SIGDescribe("[Serial] Volume metrics", func() {
 		defaultClass, err := c.StorageV1().StorageClasses().Get(context.TODO(), defaultScName, metav1.GetOptions{})
 		framework.ExpectNoError(err, "Error getting default storageclass: %v", err)
 		pluginName := defaultClass.Provisioner
-
-		controllerMetrics, err := metricsGrabber.GrabFromControllerManager()
-
-		framework.ExpectNoError(err, "Error getting c-m metrics : %v", err)
-
-		storageOpMetrics := getControllerStorageMetrics(controllerMetrics, pluginName)
 
 		invalidSc = &storagev1.StorageClass{
 			ObjectMeta: metav1.ObjectMeta{
@@ -209,7 +204,6 @@ var _ = utils.SIGDescribe("[Serial] Volume metrics", func() {
 		updatedStorageMetrics := getControllerStorageMetrics(updatedControllerMetrics, pluginName)
 
 		framework.ExpectNotEqual(len(updatedStorageMetrics.statusMetrics), 0, "Error fetching c-m updated storage metrics")
-		verifyMetricCount(storageOpMetrics, updatedStorageMetrics, "volume_provision", true)
 	}
 
 	filesystemMode := func(isEphemeral bool) {
@@ -304,6 +298,12 @@ var _ = utils.SIGDescribe("[Serial] Volume metrics", func() {
 		}
 		key := volumeStatKeys[0]
 		kubeletKeyName := fmt.Sprintf("%s_%s", kubeletmetrics.KubeletSubsystem, key)
+		pvcName := pvcBlock.Name
+		pvcNamespace := pvcBlock.Namespace
+		if isEphemeral {
+			pvcName = ephemeral.VolumeClaimName(pod, &pod.Spec.Volumes[0])
+			pvcNamespace = pod.Namespace
+		}
 		// Poll kubelet metrics waiting for the volume to be picked up
 		// by the volume stats collector
 		var kubeMetrics e2emetrics.KubeletMetrics
@@ -316,17 +316,17 @@ var _ = utils.SIGDescribe("[Serial] Volume metrics", func() {
 				framework.Logf("Error fetching kubelet metrics")
 				return false, err
 			}
-			if !findVolumeStatMetric(kubeletKeyName, pvcBlock.Namespace, pvcBlock.Name, kubeMetrics) {
+			if !findVolumeStatMetric(kubeletKeyName, pvcNamespace, pvcName, kubeMetrics) {
 				return false, nil
 			}
 			return true, nil
 		})
-		framework.ExpectNoError(waitErr, "Unable to find metric %s for PVC %s/%s", kubeletKeyName, pvcBlock.Namespace, pvcBlock.Name)
+		framework.ExpectNoError(waitErr, "Unable to find metric %s for PVC %s/%s", kubeletKeyName, pvcNamespace, pvcName)
 
 		for _, key := range volumeStatKeys {
 			kubeletKeyName := fmt.Sprintf("%s_%s", kubeletmetrics.KubeletSubsystem, key)
-			found := findVolumeStatMetric(kubeletKeyName, pvcBlock.Namespace, pvcBlock.Name, kubeMetrics)
-			framework.ExpectEqual(found, true, "PVC %s, Namespace %s not found for %s", pvcBlock.Name, pvcBlock.Namespace, kubeletKeyName)
+			found := findVolumeStatMetric(kubeletKeyName, pvcNamespace, pvcName, kubeMetrics)
+			framework.ExpectEqual(found, true, "PVC %s, Namespace %s not found for %s", pvcName, pvcNamespace, kubeletKeyName)
 		}
 
 		framework.Logf("Deleting pod %q/%q", pod.Namespace, pod.Name)
@@ -458,6 +458,8 @@ var _ = utils.SIGDescribe("[Serial] Volume metrics", func() {
 		ginkgo.It("should create prometheus metrics for volume provisioning and attach/detach", func() {
 			provisioning(isEphemeral)
 		})
+		// TODO(mauriciopoppe): after CSIMigration is turned on we're no longer reporting
+		// the volume_provision metric (removed in #106609), issue to investigate the bug #106773
 		ginkgo.It("should create prometheus metrics for volume provisioning errors [Slow]", func() {
 			provisioningError(isEphemeral)
 		})
@@ -592,7 +594,7 @@ var _ = utils.SIGDescribe("[Serial] Volume metrics", func() {
 		ginkgo.It("should create unbound pv count metrics for pvc controller after creating pv only",
 			func() {
 				var err error
-				pv, err = e2epv.CreatePV(c, pv)
+				pv, err = e2epv.CreatePV(c, f.Timeouts, pv)
 				framework.ExpectNoError(err, "Error creating pv: %v", err)
 				waitForPVControllerSync(metricsGrabber, unboundPVKey, classKey)
 				validator([]map[string]int64{nil, {className: 1}, nil, nil})
@@ -610,7 +612,7 @@ var _ = utils.SIGDescribe("[Serial] Volume metrics", func() {
 		ginkgo.It("should create bound pv/pvc count metrics for pvc controller after creating both pv and pvc",
 			func() {
 				var err error
-				pv, pvc, err = e2epv.CreatePVPVC(c, pvConfig, pvcConfig, ns, true)
+				pv, pvc, err = e2epv.CreatePVPVC(c, f.Timeouts, pvConfig, pvcConfig, ns, true)
 				framework.ExpectNoError(err, "Error creating pv pvc: %v", err)
 				waitForPVControllerSync(metricsGrabber, boundPVKey, classKey)
 				waitForPVControllerSync(metricsGrabber, boundPVCKey, namespaceKey)
@@ -621,7 +623,7 @@ var _ = utils.SIGDescribe("[Serial] Volume metrics", func() {
 			func() {
 				var err error
 				dimensions := []string{pluginNameKey, volumeModeKey}
-				pv, err = e2epv.CreatePV(c, pv)
+				pv, err = e2epv.CreatePV(c, f.Timeouts, pv)
 				framework.ExpectNoError(err, "Error creating pv: %v", err)
 				waitForPVControllerSync(metricsGrabber, totalPVKey, pluginNameKey)
 				controllerMetrics, err := metricsGrabber.GrabFromControllerManager()
@@ -737,27 +739,23 @@ func getControllerStorageMetrics(ms e2emetrics.ControllerManagerMetrics, pluginN
 
 	for method, samples := range ms {
 		switch method {
-
+		// from the base metric name "storage_operation_duration_seconds"
 		case "storage_operation_duration_seconds_count":
 			for _, sample := range samples {
 				count := int64(sample.Value)
 				operation := string(sample.Metric["operation_name"])
+				// if the volumes were provisioned with a CSI Driver
+				// the metric operation name will be prefixed with
+				// "kubernetes.io/csi:"
 				metricPluginName := string(sample.Metric["volume_plugin"])
-				if len(pluginName) > 0 && pluginName != metricPluginName {
-					continue
-				}
-				result.latencyMetrics[operation] = count
-			}
-		case "storage_operation_status_count":
-			for _, sample := range samples {
-				count := int64(sample.Value)
-				operation := string(sample.Metric["operation_name"])
 				status := string(sample.Metric["status"])
-				statusCounts := result.statusMetrics[operation]
-				metricPluginName := string(sample.Metric["volume_plugin"])
-				if len(pluginName) > 0 && pluginName != metricPluginName {
+				if strings.Index(metricPluginName, pluginName) < 0 {
+					// the metric volume plugin field doesn't match
+					// the default storageClass.Provisioner field
 					continue
 				}
+
+				statusCounts := result.statusMetrics[operation]
 				switch status {
 				case "success":
 					statusCounts.successCount = count
@@ -767,8 +765,8 @@ func getControllerStorageMetrics(ms e2emetrics.ControllerManagerMetrics, pluginN
 					statusCounts.otherCount = count
 				}
 				result.statusMetrics[operation] = statusCounts
+				result.latencyMetrics[operation] = count
 			}
-
 		}
 	}
 	return result

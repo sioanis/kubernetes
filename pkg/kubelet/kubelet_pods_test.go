@@ -38,10 +38,8 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/diff"
-	utilfeature "k8s.io/apiserver/pkg/util/feature"
 	core "k8s.io/client-go/testing"
 	"k8s.io/client-go/tools/record"
-	featuregatetesting "k8s.io/component-base/featuregate/testing"
 	netutils "k8s.io/utils/net"
 
 	// TODO: remove this import if
@@ -49,7 +47,6 @@ import (
 	// to "v1"?
 
 	_ "k8s.io/kubernetes/pkg/apis/core/install"
-	"k8s.io/kubernetes/pkg/features"
 	kubecontainer "k8s.io/kubernetes/pkg/kubelet/container"
 	containertest "k8s.io/kubernetes/pkg/kubelet/container/testing"
 	"k8s.io/kubernetes/pkg/kubelet/cri/streaming/portforward"
@@ -2979,13 +2976,12 @@ func TestGetPortForward(t *testing.T) {
 
 func TestHasHostMountPVC(t *testing.T) {
 	type testcase struct {
-		pvError          error
-		pvcError         error
-		expected         bool
-		podHasPVC        bool
-		pvcIsHostPath    bool
-		podHasEphemeral  bool
-		ephemeralEnabled bool
+		pvError         error
+		pvcError        error
+		expected        bool
+		podHasPVC       bool
+		pvcIsHostPath   bool
+		podHasEphemeral bool
 	}
 	tests := map[string]testcase{
 		"no pvc": {podHasPVC: false, expected: false},
@@ -3005,16 +3001,9 @@ func TestHasHostMountPVC(t *testing.T) {
 			expected:      true,
 		},
 		"enabled ephemeral host path": {
-			podHasEphemeral:  true,
-			pvcIsHostPath:    true,
-			ephemeralEnabled: true,
-			expected:         true,
-		},
-		"disabled ephemeral host path": {
-			podHasEphemeral:  true,
-			pvcIsHostPath:    true,
-			ephemeralEnabled: false,
-			expected:         false,
+			podHasEphemeral: true,
+			pvcIsHostPath:   true,
+			expected:        true,
 		},
 		"non host path pvc": {
 			podHasPVC:     true,
@@ -3024,7 +3013,6 @@ func TestHasHostMountPVC(t *testing.T) {
 	}
 
 	run := func(t *testing.T, v testcase) {
-		defer featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.GenericEphemeralVolume, v.ephemeralEnabled)()
 		testKubelet := newTestKubelet(t, false)
 		defer testKubelet.Cleanup()
 		pod := &v1.Pod{
@@ -3296,6 +3284,7 @@ func TestGenerateAPIPodStatusHostNetworkPodIPs(t *testing.T) {
 			criPodIPs: []string{"192.168.0.1"},
 			podIPs: []v1.PodIP{
 				{IP: "192.168.0.1"},
+				{IP: "fd01::1234"},
 			},
 		},
 		{
@@ -3355,6 +3344,119 @@ func TestGenerateAPIPodStatusHostNetworkPodIPs(t *testing.T) {
 				t.Fatalf("Expected PodIPs %#v, got %#v", tc.podIPs, status.PodIPs)
 			}
 			if tc.criPodIPs == nil && status.HostIP != status.PodIPs[0].IP {
+				t.Fatalf("Expected HostIP %q to equal PodIPs[0].IP %q", status.HostIP, status.PodIPs[0].IP)
+			}
+		})
+	}
+}
+
+func TestNodeAddressUpdatesGenerateAPIPodStatusHostNetworkPodIPs(t *testing.T) {
+	testcases := []struct {
+		name           string
+		nodeIPs        []string
+		nodeAddresses  []v1.NodeAddress
+		expectedPodIPs []v1.PodIP
+	}{
+
+		{
+			name:    "Immutable after update node addresses single-stack",
+			nodeIPs: []string{"10.0.0.1"},
+			nodeAddresses: []v1.NodeAddress{
+				{Type: v1.NodeInternalIP, Address: "1.1.1.1"},
+			},
+			expectedPodIPs: []v1.PodIP{
+				{IP: "10.0.0.1"},
+			},
+		},
+		{
+			name:    "Immutable after update node addresses dual-stack - primary address",
+			nodeIPs: []string{"10.0.0.1", "2001:db8::2"},
+			nodeAddresses: []v1.NodeAddress{
+				{Type: v1.NodeInternalIP, Address: "1.1.1.1"},
+				{Type: v1.NodeInternalIP, Address: "2001:db8::2"},
+			},
+			expectedPodIPs: []v1.PodIP{
+				{IP: "10.0.0.1"},
+				{IP: "2001:db8::2"},
+			},
+		},
+		{
+			name:    "Immutable after update node addresses dual-stack - secondary address",
+			nodeIPs: []string{"10.0.0.1", "2001:db8::2"},
+			nodeAddresses: []v1.NodeAddress{
+				{Type: v1.NodeInternalIP, Address: "10.0.0.1"},
+				{Type: v1.NodeInternalIP, Address: "2001:db8:1:2:3::2"},
+			},
+			expectedPodIPs: []v1.PodIP{
+				{IP: "10.0.0.1"},
+				{IP: "2001:db8::2"},
+			},
+		},
+		{
+			name:    "Immutable after update node addresses dual-stack - primary and secondary address",
+			nodeIPs: []string{"10.0.0.1", "2001:db8::2"},
+			nodeAddresses: []v1.NodeAddress{
+				{Type: v1.NodeInternalIP, Address: "1.1.1.1"},
+				{Type: v1.NodeInternalIP, Address: "2001:db8:1:2:3::2"},
+			},
+			expectedPodIPs: []v1.PodIP{
+				{IP: "10.0.0.1"},
+				{IP: "2001:db8::2"},
+			},
+		},
+		{
+			name:    "Update secondary after new secondary address dual-stack",
+			nodeIPs: []string{"10.0.0.1"},
+			nodeAddresses: []v1.NodeAddress{
+				{Type: v1.NodeInternalIP, Address: "10.0.0.1"},
+				{Type: v1.NodeInternalIP, Address: "2001:db8::2"},
+			},
+			expectedPodIPs: []v1.PodIP{
+				{IP: "10.0.0.1"},
+				{IP: "2001:db8::2"},
+			},
+		},
+	}
+
+	for _, tc := range testcases {
+		t.Run(tc.name, func(t *testing.T) {
+			testKubelet := newTestKubelet(t, false /* controllerAttachDetachEnabled */)
+			defer testKubelet.Cleanup()
+			kl := testKubelet.kubelet
+			for _, ip := range tc.nodeIPs {
+				kl.nodeIPs = append(kl.nodeIPs, netutils.ParseIPSloppy(ip))
+			}
+			kl.nodeLister = testNodeLister{nodes: []*v1.Node{
+				{
+					ObjectMeta: metav1.ObjectMeta{Name: string(kl.nodeName)},
+					Status: v1.NodeStatus{
+						Addresses: tc.nodeAddresses,
+					},
+				},
+			}}
+
+			pod := podWithUIDNameNs("12345", "test-pod", "test-namespace")
+			pod.Spec.HostNetwork = true
+			for _, ip := range tc.nodeIPs {
+				pod.Status.PodIPs = append(pod.Status.PodIPs, v1.PodIP{IP: ip})
+			}
+			if len(pod.Status.PodIPs) > 0 {
+				pod.Status.PodIP = pod.Status.PodIPs[0].IP
+			}
+
+			// set old status
+			podStatus := &kubecontainer.PodStatus{
+				ID:        pod.UID,
+				Name:      pod.Name,
+				Namespace: pod.Namespace,
+			}
+			podStatus.IPs = tc.nodeIPs
+
+			status := kl.generateAPIPodStatus(pod, podStatus)
+			if !reflect.DeepEqual(status.PodIPs, tc.expectedPodIPs) {
+				t.Fatalf("Expected PodIPs %#v, got %#v", tc.expectedPodIPs, status.PodIPs)
+			}
+			if kl.nodeIPs[0].String() != status.PodIPs[0].IP {
 				t.Fatalf("Expected HostIP %q to equal PodIPs[0].IP %q", status.HostIP, status.PodIPs[0].IP)
 			}
 		})

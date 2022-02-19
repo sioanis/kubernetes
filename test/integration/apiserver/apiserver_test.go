@@ -22,7 +22,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -73,19 +72,19 @@ import (
 	"k8s.io/kubernetes/test/integration/framework"
 )
 
-func setup(t *testing.T, groupVersions ...schema.GroupVersion) (*httptest.Server, clientset.Interface, framework.CloseFunc) {
+func setup(t testing.TB, groupVersions ...schema.GroupVersion) (*httptest.Server, clientset.Interface, framework.CloseFunc) {
 	return setupWithResources(t, groupVersions, nil)
 }
 
-func setupWithOptions(t *testing.T, opts *framework.ControlPlaneConfigOptions, groupVersions ...schema.GroupVersion) (*httptest.Server, clientset.Interface, framework.CloseFunc) {
+func setupWithOptions(t testing.TB, opts *framework.ControlPlaneConfigOptions, groupVersions ...schema.GroupVersion) (*httptest.Server, clientset.Interface, framework.CloseFunc) {
 	return setupWithResourcesWithOptions(t, opts, groupVersions, nil)
 }
 
-func setupWithResources(t *testing.T, groupVersions []schema.GroupVersion, resources []schema.GroupVersionResource) (*httptest.Server, clientset.Interface, framework.CloseFunc) {
+func setupWithResources(t testing.TB, groupVersions []schema.GroupVersion, resources []schema.GroupVersionResource) (*httptest.Server, clientset.Interface, framework.CloseFunc) {
 	return setupWithResourcesWithOptions(t, &framework.ControlPlaneConfigOptions{}, groupVersions, resources)
 }
 
-func setupWithResourcesWithOptions(t *testing.T, opts *framework.ControlPlaneConfigOptions, groupVersions []schema.GroupVersion, resources []schema.GroupVersionResource) (*httptest.Server, clientset.Interface, framework.CloseFunc) {
+func setupWithResourcesWithOptions(t testing.TB, opts *framework.ControlPlaneConfigOptions, groupVersions []schema.GroupVersion, resources []schema.GroupVersionResource) (*httptest.Server, clientset.Interface, framework.CloseFunc) {
 	controlPlaneConfig := framework.NewIntegrationTestControlPlaneConfigWithOptions(opts)
 	if len(groupVersions) > 0 || len(resources) > 0 {
 		resourceConfig := controlplane.DefaultAPIResourceConfigSource()
@@ -117,7 +116,7 @@ func verifyStatusCode(t *testing.T, verb, URL, body string, expectedStatusCode i
 		t.Fatalf("unexpected error: %v in req: %v", err, req)
 	}
 	defer resp.Body.Close()
-	b, _ := ioutil.ReadAll(resp.Body)
+	b, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode != expectedStatusCode {
 		t.Errorf("Expected status %v, but got %v", expectedStatusCode, resp.StatusCode)
 		t.Errorf("Body: %v", string(b))
@@ -2070,7 +2069,7 @@ func expectPartialObjectMetaEventsProtobuf(t *testing.T, r io.Reader, values ...
 	metav1.AddToGroupVersion(scheme, schema.GroupVersion{Version: "v1"})
 	rs := protobuf.NewRawSerializer(scheme, scheme)
 	d := streaming.NewDecoder(
-		protobuf.LengthDelimitedFramer.NewFrameReader(ioutil.NopCloser(r)),
+		protobuf.LengthDelimitedFramer.NewFrameReader(io.NopCloser(r)),
 		rs,
 	)
 	ds := metainternalversionscheme.Codecs.UniversalDeserializer()
@@ -2179,7 +2178,7 @@ func expectPartialObjectMetaV1EventsProtobuf(t *testing.T, r io.Reader, values .
 	metav1.AddToGroupVersion(scheme, schema.GroupVersion{Version: "v1"})
 	rs := protobuf.NewRawSerializer(scheme, scheme)
 	d := streaming.NewDecoder(
-		protobuf.LengthDelimitedFramer.NewFrameReader(ioutil.NopCloser(r)),
+		protobuf.LengthDelimitedFramer.NewFrameReader(io.NopCloser(r)),
 		rs,
 	)
 	ds := metainternalversionscheme.Codecs.UniversalDeserializer()

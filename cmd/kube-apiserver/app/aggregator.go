@@ -146,7 +146,7 @@ func createAggregatorServer(aggregatorConfig *aggregatorapiserver.Config, delega
 			// let the CRD controller process the initial set of CRDs before starting the autoregistration controller.
 			// this prevents the autoregistration controller's initial sync from deleting APIServices for CRDs that still exist.
 			// we only need to do this if CRDs are enabled on this server.  We can't use discovery because we are the source for discovery.
-			if aggregatorConfig.GenericConfig.MergedResourceConfig.AnyVersionForGroupEnabled("apiextensions.k8s.io") {
+			if aggregatorConfig.GenericConfig.MergedResourceConfig.AnyResourceForGroupEnabled("apiextensions.k8s.io") {
 				crdRegistrationController.WaitForInitialSync()
 			}
 			autoRegistrationController.Run(5, context.StopCh)
@@ -251,6 +251,7 @@ var apiVersionPriorities = map[schema.GroupVersion]priority{
 	{Group: "authentication.k8s.io", Version: "v1"}:              {group: 17700, version: 15},
 	{Group: "authorization.k8s.io", Version: "v1"}:               {group: 17600, version: 15},
 	{Group: "autoscaling", Version: "v1"}:                        {group: 17500, version: 15},
+	{Group: "autoscaling", Version: "v2"}:                        {group: 17500, version: 30},
 	{Group: "autoscaling", Version: "v2beta1"}:                   {group: 17500, version: 9},
 	{Group: "autoscaling", Version: "v2beta2"}:                   {group: 17500, version: 1},
 	{Group: "batch", Version: "v1"}:                              {group: 17400, version: 15},

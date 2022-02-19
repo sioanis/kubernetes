@@ -47,10 +47,9 @@ func CreateVolumeSpec(podVolume v1.Volume, pod *v1.Pod, nodeName types.NodeName,
 		claimName = pvcSource.ClaimName
 		readOnly = pvcSource.ReadOnly
 	}
-	isEphemeral := false
-	if ephemeralSource := podVolume.VolumeSource.Ephemeral; ephemeralSource != nil && utilfeature.DefaultFeatureGate.Enabled(features.GenericEphemeralVolume) {
+	isEphemeral := podVolume.VolumeSource.Ephemeral != nil
+	if isEphemeral {
 		claimName = ephemeral.VolumeClaimName(pod, &podVolume)
-		isEphemeral = true
 	}
 	if claimName != "" {
 		klog.V(10).Infof(
@@ -189,10 +188,10 @@ func DetermineVolumeAction(pod *v1.Pod, desiredStateOfWorld cache.DesiredStateOf
 	if pod == nil || len(pod.Spec.Volumes) <= 0 {
 		return defaultAction
 	}
-	nodeName := types.NodeName(pod.Spec.NodeName)
-	keepTerminatedPodVolume := desiredStateOfWorld.GetKeepTerminatedPodVolumesForNode(nodeName)
 
 	if util.IsPodTerminated(pod, pod.Status) {
+		nodeName := types.NodeName(pod.Spec.NodeName)
+		keepTerminatedPodVolume := desiredStateOfWorld.GetKeepTerminatedPodVolumesForNode(nodeName)
 		// if pod is terminate we let kubelet policy dictate if volume
 		// should be detached or not
 		return keepTerminatedPodVolume

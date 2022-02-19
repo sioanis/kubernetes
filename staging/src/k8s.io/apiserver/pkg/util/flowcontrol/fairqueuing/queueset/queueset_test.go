@@ -351,7 +351,7 @@ func (uss *uniformScenarioState) finalReview() {
 	}
 	if uss.evalInqueueMetrics {
 		e := `
-				# HELP apiserver_flowcontrol_current_inqueue_requests [ALPHA] Number of requests currently pending in queues of the API Priority and Fairness system
+				# HELP apiserver_flowcontrol_current_inqueue_requests [ALPHA] Number of requests currently pending in queues of the API Priority and Fairness subsystem
 				# TYPE apiserver_flowcontrol_current_inqueue_requests gauge
 ` + uss.expectedInqueue
 		err := metrics.GatherAndCompare(e, "apiserver_flowcontrol_current_inqueue_requests")
@@ -374,7 +374,7 @@ func (uss *uniformScenarioState) finalReview() {
 	}
 	if uss.evalExecutingMetrics && len(uss.expectedExecuting) > 0 {
 		e := `
-				# HELP apiserver_flowcontrol_current_executing_requests [ALPHA] Number of requests in regular execution phase in the API Priority and Fairness system
+				# HELP apiserver_flowcontrol_current_executing_requests [ALPHA] Number of requests in initial (for a WATCH) or any (for a non-WATCH) execution stage in the API Priority and Fairness subsystem
 				# TYPE apiserver_flowcontrol_current_executing_requests gauge
 ` + uss.expectedExecuting
 		err := metrics.GatherAndCompare(e, "apiserver_flowcontrol_current_executing_requests")
@@ -386,7 +386,7 @@ func (uss *uniformScenarioState) finalReview() {
 	}
 	if uss.evalExecutingMetrics && len(uss.expectedConcurrencyInUse) > 0 {
 		e := `
-				# HELP apiserver_flowcontrol_request_concurrency_in_use [ALPHA] Concurrency (number of seats) occupided by the currently executing (all phases count) requests in the API Priority and Fairness system
+				# HELP apiserver_flowcontrol_request_concurrency_in_use [ALPHA] Concurrency (number of seats) occupied by the currently executing (initial stage for a WATCH, any stage otherwise) requests in the API Priority and Fairness subsystem
 				# TYPE apiserver_flowcontrol_request_concurrency_in_use gauge
 ` + uss.expectedConcurrencyInUse
 		err := metrics.GatherAndCompare(e, "apiserver_flowcontrol_request_concurrency_in_use")
@@ -398,7 +398,7 @@ func (uss *uniformScenarioState) finalReview() {
 	}
 	if uss.evalExecutingMetrics && len(expectedRejects) > 0 {
 		e := `
-				# HELP apiserver_flowcontrol_rejected_requests_total [ALPHA] Number of requests rejected by API Priority and Fairness system
+				# HELP apiserver_flowcontrol_rejected_requests_total [ALPHA] Number of requests rejected by API Priority and Fairness subsystem
 				# TYPE apiserver_flowcontrol_rejected_requests_total counter
 ` + expectedRejects
 		err := metrics.GatherAndCompare(e, "apiserver_flowcontrol_rejected_requests_total")
@@ -445,7 +445,7 @@ func TestNoRestraint(t *testing.T) {
 		t.Run(testCase.name, func(t *testing.T) {
 			now := time.Now()
 			clk, counter := testeventclock.NewFake(now, 0, nil)
-			nrc, err := test.NewNoRestraintFactory().BeginConstruction(fq.QueuingConfig{}, newObserverPair(clk))
+			nrc, err := test.NewNoRestraintFactory().BeginConstruction(fq.QueuingConfig{}, newObserverPair(clk), newExecSeatsObserver(clk))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -481,7 +481,7 @@ func TestBaseline(t *testing.T) {
 		HandSize:         3,
 		RequestWaitLimit: 10 * time.Minute,
 	}
-	qsc, err := qsf.BeginConstruction(qCfg, newObserverPair(clk))
+	qsc, err := qsf.BeginConstruction(qCfg, newObserverPair(clk), newExecSeatsObserver(clk))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -550,7 +550,7 @@ func TestSeparations(t *testing.T) {
 				HandSize:         3,
 				RequestWaitLimit: 10 * time.Minute,
 			}
-			qsc, err := qsf.BeginConstruction(qCfg, newObserverPair(clk))
+			qsc, err := qsf.BeginConstruction(qCfg, newObserverPair(clk), newExecSeatsObserver(clk))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -589,7 +589,7 @@ func TestUniformFlowsHandSize1(t *testing.T) {
 		HandSize:         1,
 		RequestWaitLimit: 10 * time.Minute,
 	}
-	qsc, err := qsf.BeginConstruction(qCfg, newObserverPair(clk))
+	qsc, err := qsf.BeginConstruction(qCfg, newObserverPair(clk), newExecSeatsObserver(clk))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -626,7 +626,7 @@ func TestUniformFlowsHandSize3(t *testing.T) {
 		HandSize:         3,
 		RequestWaitLimit: 10 * time.Minute,
 	}
-	qsc, err := qsf.BeginConstruction(qCfg, newObserverPair(clk))
+	qsc, err := qsf.BeginConstruction(qCfg, newObserverPair(clk), newExecSeatsObserver(clk))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -662,7 +662,7 @@ func TestDifferentFlowsExpectEqual(t *testing.T) {
 		HandSize:         1,
 		RequestWaitLimit: 10 * time.Minute,
 	}
-	qsc, err := qsf.BeginConstruction(qCfg, newObserverPair(clk))
+	qsc, err := qsf.BeginConstruction(qCfg, newObserverPair(clk), newExecSeatsObserver(clk))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -702,7 +702,7 @@ func TestSeatSecondsRollover(t *testing.T) {
 		HandSize:         1,
 		RequestWaitLimit: 40 * Quarter,
 	}
-	qsc, err := qsf.BeginConstruction(qCfg, newObserverPair(clk))
+	qsc, err := qsf.BeginConstruction(qCfg, newObserverPair(clk), newExecSeatsObserver(clk))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -740,7 +740,7 @@ func TestDifferentFlowsExpectUnequal(t *testing.T) {
 		HandSize:         1,
 		RequestWaitLimit: 10 * time.Minute,
 	}
-	qsc, err := qsf.BeginConstruction(qCfg, newObserverPair(clk))
+	qsc, err := qsf.BeginConstruction(qCfg, newObserverPair(clk), newExecSeatsObserver(clk))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -777,7 +777,7 @@ func TestDifferentWidths(t *testing.T) {
 		HandSize:         7,
 		RequestWaitLimit: 10 * time.Minute,
 	}
-	qsc, err := qsf.BeginConstruction(qCfg, newObserverPair(clk))
+	qsc, err := qsf.BeginConstruction(qCfg, newObserverPair(clk), newExecSeatsObserver(clk))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -813,7 +813,7 @@ func TestTooWide(t *testing.T) {
 		HandSize:         7,
 		RequestWaitLimit: 10 * time.Minute,
 	}
-	qsc, err := qsf.BeginConstruction(qCfg, newObserverPair(clk))
+	qsc, err := qsf.BeginConstruction(qCfg, newObserverPair(clk), newExecSeatsObserver(clk))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -874,7 +874,7 @@ func TestWindup(t *testing.T) {
 				HandSize:         1,
 				RequestWaitLimit: 10 * time.Minute,
 			}
-			qsc, err := qsf.BeginConstruction(qCfg, newObserverPair(clk))
+			qsc, err := qsf.BeginConstruction(qCfg, newObserverPair(clk), newExecSeatsObserver(clk))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -909,7 +909,7 @@ func TestDifferentFlowsWithoutQueuing(t *testing.T) {
 		Name:             "TestDifferentFlowsWithoutQueuing",
 		DesiredNumQueues: 0,
 	}
-	qsc, err := qsf.BeginConstruction(qCfg, newObserverPair(clk))
+	qsc, err := qsf.BeginConstruction(qCfg, newObserverPair(clk), newExecSeatsObserver(clk))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -945,7 +945,7 @@ func TestTimeout(t *testing.T) {
 		HandSize:         1,
 		RequestWaitLimit: 0,
 	}
-	qsc, err := qsf.BeginConstruction(qCfg, newObserverPair(clk))
+	qsc, err := qsf.BeginConstruction(qCfg, newObserverPair(clk), newExecSeatsObserver(clk))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -996,7 +996,7 @@ func TestContextCancel(t *testing.T) {
 		HandSize:         1,
 		RequestWaitLimit: 15 * time.Second,
 	}
-	qsc, err := qsf.BeginConstruction(qCfg, newObserverPair(clk))
+	qsc, err := qsf.BeginConstruction(qCfg, newObserverPair(clk), newExecSeatsObserver(clk))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1102,7 +1102,7 @@ func TestTotalRequestsExecutingWithPanic(t *testing.T) {
 		DesiredNumQueues: 0,
 		RequestWaitLimit: 15 * time.Second,
 	}
-	qsc, err := qsf.BeginConstruction(qCfg, newObserverPair(clk))
+	qsc, err := qsf.BeginConstruction(qCfg, newObserverPair(clk), newExecSeatsObserver(clk))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1173,13 +1173,13 @@ func TestFindDispatchQueueLocked(t *testing.T) {
 			robinIndex:       -1,
 			queues: []*queue{
 				{
-					nextDispatchR: SeatsTimesDuration(1, 200*time.Second),
+					nextDispatchR: fcrequest.SeatsTimesDuration(1, 200*time.Second),
 					requests: newFIFO(
 						&request{workEstimate: qs0.completeWorkEstimate(&fcrequest.WorkEstimate{InitialSeats: 1})},
 					),
 				},
 				{
-					nextDispatchR: SeatsTimesDuration(1, 100*time.Second),
+					nextDispatchR: fcrequest.SeatsTimesDuration(1, 100*time.Second),
 					requests: newFIFO(
 						&request{workEstimate: qs0.completeWorkEstimate(&fcrequest.WorkEstimate{InitialSeats: 1})},
 					),
@@ -1196,7 +1196,7 @@ func TestFindDispatchQueueLocked(t *testing.T) {
 			robinIndex:       -1,
 			queues: []*queue{
 				{
-					nextDispatchR: SeatsTimesDuration(1, 200*time.Second),
+					nextDispatchR: fcrequest.SeatsTimesDuration(1, 200*time.Second),
 					requests: newFIFO(
 						&request{workEstimate: qs0.completeWorkEstimate(&fcrequest.WorkEstimate{InitialSeats: 1})},
 					),
@@ -1213,13 +1213,13 @@ func TestFindDispatchQueueLocked(t *testing.T) {
 			robinIndex:       -1,
 			queues: []*queue{
 				{
-					nextDispatchR: SeatsTimesDuration(1, 200*time.Second),
+					nextDispatchR: fcrequest.SeatsTimesDuration(1, 200*time.Second),
 					requests: newFIFO(
 						&request{workEstimate: qs0.completeWorkEstimate(&fcrequest.WorkEstimate{InitialSeats: 50})},
 					),
 				},
 				{
-					nextDispatchR: SeatsTimesDuration(1, 100*time.Second),
+					nextDispatchR: fcrequest.SeatsTimesDuration(1, 100*time.Second),
 					requests: newFIFO(
 						&request{workEstimate: qs0.completeWorkEstimate(&fcrequest.WorkEstimate{InitialSeats: 25})},
 					),
@@ -1236,13 +1236,13 @@ func TestFindDispatchQueueLocked(t *testing.T) {
 			robinIndex:       -1,
 			queues: []*queue{
 				{
-					nextDispatchR: SeatsTimesDuration(1, 200*time.Second),
+					nextDispatchR: fcrequest.SeatsTimesDuration(1, 200*time.Second),
 					requests: newFIFO(
 						&request{workEstimate: qs0.completeWorkEstimate(&fcrequest.WorkEstimate{InitialSeats: 10})},
 					),
 				},
 				{
-					nextDispatchR: SeatsTimesDuration(1, 100*time.Second),
+					nextDispatchR: fcrequest.SeatsTimesDuration(1, 100*time.Second),
 					requests: newFIFO(
 						&request{workEstimate: qs0.completeWorkEstimate(&fcrequest.WorkEstimate{InitialSeats: 25})},
 					),
@@ -1259,13 +1259,13 @@ func TestFindDispatchQueueLocked(t *testing.T) {
 			robinIndex:       -1,
 			queues: []*queue{
 				{
-					nextDispatchR: SeatsTimesDuration(1, 200*time.Second),
+					nextDispatchR: fcrequest.SeatsTimesDuration(1, 200*time.Second),
 					requests: newFIFO(
 						&request{workEstimate: qs0.completeWorkEstimate(&fcrequest.WorkEstimate{InitialSeats: 10})},
 					),
 				},
 				{
-					nextDispatchR: SeatsTimesDuration(1, 100*time.Second),
+					nextDispatchR: fcrequest.SeatsTimesDuration(1, 100*time.Second),
 					requests: newFIFO(
 						&request{workEstimate: qs0.completeWorkEstimate(&fcrequest.WorkEstimate{InitialSeats: 25})},
 					),
@@ -1357,7 +1357,8 @@ func TestFinishRequestLocked(t *testing.T) {
 			qs := &queueSet{
 				clock:                    clk,
 				estimatedServiceDuration: time.Second,
-				obsPair:                  newObserverPair(clk),
+				reqsObsPair:              newObserverPair(clk),
+				execSeatsObs:             newExecSeatsObserver(clk),
 			}
 			queue := &queue{
 				requests: newRequestFIFO(),
@@ -1446,7 +1447,7 @@ func TestRequestWork(t *testing.T) {
 	}
 
 	got := request.totalWork()
-	want := SeatsTimesDuration(3, 2*time.Second) + SeatsTimesDuration(50, 70*time.Second)
+	want := fcrequest.SeatsTimesDuration(3, 2*time.Second) + fcrequest.SeatsTimesDuration(50, 70*time.Second)
 	if want != got {
 		t.Errorf("Expected totalWork: %v, but got: %v", want, got)
 	}
@@ -1460,6 +1461,10 @@ func newFIFO(requests ...*request) fifo {
 	return l
 }
 
-func newObserverPair(clk clock.PassiveClock) metrics.TimedObserverPair {
+func newObserverPair(clk clock.PassiveClock) metrics.RatioedChangeObserverPair {
 	return metrics.PriorityLevelConcurrencyObserverPairGenerator.Generate(1, 1, []string{"test"})
+}
+
+func newExecSeatsObserver(clk clock.PassiveClock) metrics.RatioedChangeObserver {
+	return metrics.PriorityLevelExecutionSeatsObserverGenerator.Generate(1, 1, []string{"test"})
 }

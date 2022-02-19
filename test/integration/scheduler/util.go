@@ -77,7 +77,7 @@ func initDisruptionController(t *testing.T, testCtx *testutils.TestContext) *dis
 
 	informers.Start(testCtx.Scheduler.StopEverything)
 	informers.WaitForCacheSync(testCtx.Scheduler.StopEverything)
-	go dc.Run(testCtx.Scheduler.StopEverything)
+	go dc.Run(testCtx.Ctx)
 	return dc
 }
 
@@ -460,35 +460,6 @@ func deletePod(cs clientset.Interface, podName string, nsName string) error {
 
 func getPod(cs clientset.Interface, podName string, podNamespace string) (*v1.Pod, error) {
 	return cs.CoreV1().Pods(podNamespace).Get(context.TODO(), podName, metav1.GetOptions{})
-}
-
-// noPodsInNamespace returns true if no pods in the given namespace.
-func noPodsInNamespace(c clientset.Interface, podNamespace string) wait.ConditionFunc {
-	return func() (bool, error) {
-		pods, err := c.CoreV1().Pods(podNamespace).List(context.TODO(), metav1.ListOptions{})
-		if err != nil {
-			return false, err
-		}
-
-		return len(pods.Items) == 0, nil
-	}
-}
-
-// cleanupPodsInNamespace deletes the pods in the given namespace and waits for them to
-// be actually deleted.  They are removed with no grace.
-func cleanupPodsInNamespace(cs clientset.Interface, t *testing.T, ns string) {
-	t.Helper()
-
-	zero := int64(0)
-	if err := cs.CoreV1().Pods(ns).DeleteCollection(context.TODO(), metav1.DeleteOptions{GracePeriodSeconds: &zero}, metav1.ListOptions{}); err != nil {
-		t.Errorf("error while listing pod in namespace %v: %v", ns, err)
-		return
-	}
-
-	if err := wait.Poll(time.Second, wait.ForeverTestTimeout,
-		noPodsInNamespace(cs, ns)); err != nil {
-		t.Errorf("error while waiting for pods in namespace %v: %v", ns, err)
-	}
 }
 
 // podScheduled returns true if a node is assigned to the given pod.

@@ -242,6 +242,17 @@ func (r *REST) defaultOnReadService(service *api.Service) {
 
 	// Set ipFamilies and ipFamilyPolicy if needed.
 	r.defaultOnReadIPFamilies(service)
+
+	// We unintentionally defaulted internalTrafficPolicy when it's not needed
+	// for the ExternalName type. It's too late to change the field in storage,
+	// but we can drop the field when read.
+	defaultOnReadInternalTrafficPolicy(service)
+}
+
+func defaultOnReadInternalTrafficPolicy(service *api.Service) {
+	if service.Spec.Type == api.ServiceTypeExternalName {
+		service.Spec.InternalTrafficPolicy = nil
+	}
 }
 
 func (r *REST) defaultOnReadIPFamilies(service *api.Service) {
@@ -355,6 +366,11 @@ func (r *REST) beginCreate(ctx context.Context, obj runtime.Object, options *met
 func (r *REST) beginUpdate(ctx context.Context, obj, oldObj runtime.Object, options *metav1.UpdateOptions) (genericregistry.FinishFunc, error) {
 	newSvc := obj.(*api.Service)
 	oldSvc := oldObj.(*api.Service)
+
+	// Make sure the existing object has all fields we expect to be defaulted.
+	// This might not be true if the saved object predates these fields (the
+	// Decorator hook is not called on 'old' in the update path.
+	r.defaultOnReadService(oldSvc)
 
 	// Fix up allocated values that the client may have not specified (for
 	// idempotence).

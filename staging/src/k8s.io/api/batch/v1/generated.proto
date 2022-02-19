@@ -27,7 +27,7 @@ import "k8s.io/apimachinery/pkg/runtime/generated.proto";
 import "k8s.io/apimachinery/pkg/runtime/schema/generated.proto";
 
 // Package-wide variables from generator "generated".
-option go_package = "v1";
+option go_package = "k8s.io/api/batch/v1";
 
 // CronJob represents the configuration of a single cron job.
 message CronJob {
@@ -262,9 +262,6 @@ message JobSpec {
   // Suspending a Job will reset the StartTime field of the Job, effectively
   // resetting the ActiveDeadlineSeconds timer too. Defaults to false.
   //
-  // This field is beta-level, gated by SuspendJob feature flag (enabled by
-  // default).
-  //
   // +optional
   optional bool suspend = 10;
 }
@@ -298,7 +295,7 @@ message JobStatus {
   // +optional
   optional k8s.io.apimachinery.pkg.apis.meta.v1.Time completionTime = 3;
 
-  // The number of actively running pods.
+  // The number of pending and running pods.
   // +optional
   optional int32 active = 4;
 
@@ -338,6 +335,13 @@ message JobStatus {
   // remains null.
   // +optional
   optional UncountedTerminatedPods uncountedTerminatedPods = 8;
+
+  // The number of pods which have a Ready condition.
+  //
+  // This field is alpha-level. The job controller populates the field when
+  // the feature gate JobReadyPods is enabled (disabled by default).
+  // +optional
+  optional int32 ready = 9;
 }
 
 // JobTemplateSpec describes the data a Job should have when created from a template

@@ -31,6 +31,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/json"
 	podutil "k8s.io/kubernetes/pkg/api/v1/pod"
 	"k8s.io/kubernetes/pkg/controller"
@@ -122,7 +123,7 @@ func (dsc *DaemonSetsController) rollingUpdate(ctx context.Context, ds *apps.Dae
 		}
 		oldPodsToDelete := append(allowedReplacementPods, candidatePodsToDelete[:remainingUnavailable]...)
 
-		return dsc.syncNodes(ds, oldPodsToDelete, nil, hash)
+		return dsc.syncNodes(ctx, ds, oldPodsToDelete, nil, hash)
 	}
 
 	// When surging, we create new pods whenever an old pod is unavailable, and we can create up
@@ -200,7 +201,7 @@ func (dsc *DaemonSetsController) rollingUpdate(ctx context.Context, ds *apps.Dae
 	}
 	newNodesToCreate := append(allowedNewNodes, candidateNewNodes[:remainingSurge]...)
 
-	return dsc.syncNodes(ds, oldPodsToDelete, newNodesToCreate, hash)
+	return dsc.syncNodes(ctx, ds, oldPodsToDelete, newNodesToCreate, hash)
 }
 
 // findUpdatedPodsOnNode looks at non-deleted pods on a given node and returns true if there
@@ -367,12 +368,18 @@ func (dsc *DaemonSetsController) dedupCurHistories(ctx context.Context, ds *apps
 		}
 		for _, pod := range pods {
 			if pod.Labels[apps.DefaultDaemonSetUniqueLabelKey] != keepCur.Labels[apps.DefaultDaemonSetUniqueLabelKey] {
-				toUpdate := pod.DeepCopy()
-				if toUpdate.Labels == nil {
-					toUpdate.Labels = make(map[string]string)
+				patchRaw := map[string]interface{}{
+					"metadata": map[string]interface{}{
+						"labels": map[string]interface{}{
+							apps.DefaultDaemonSetUniqueLabelKey: keepCur.Labels[apps.DefaultDaemonSetUniqueLabelKey],
+						},
+					},
 				}
-				toUpdate.Labels[apps.DefaultDaemonSetUniqueLabelKey] = keepCur.Labels[apps.DefaultDaemonSetUniqueLabelKey]
-				_, err = dsc.kubeClient.CoreV1().Pods(ds.Namespace).Update(ctx, toUpdate, metav1.UpdateOptions{})
+				patchJson, err := json.Marshal(patchRaw)
+				if err != nil {
+					return nil, err
+				}
+				_, err = dsc.kubeClient.CoreV1().Pods(ds.Namespace).Patch(ctx, pod.Name, types.MergePatchType, patchJson, metav1.PatchOptions{})
 				if err != nil {
 					return nil, err
 				}
@@ -399,7 +406,7 @@ func (dsc *DaemonSetsController) controlledHistories(ctx context.Context, ds *ap
 
 	// List all histories to include those that don't match the selector anymore
 	// but have a ControllerRef pointing to the controller.
-	histories, err := dsc.historyLister.List(labels.Everything())
+	histories, err := dsc.historyLister.ControllerRevisions(ds.Namespace).List(labels.Everything())
 	if err != nil {
 		return nil, err
 	}

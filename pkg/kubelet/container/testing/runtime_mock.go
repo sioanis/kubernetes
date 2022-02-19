@@ -28,7 +28,7 @@ import (
 	types "k8s.io/apimachinery/pkg/types"
 	remotecommand "k8s.io/client-go/tools/remotecommand"
 	flowcontrol "k8s.io/client-go/util/flowcontrol"
-	v1alpha2 "k8s.io/cri-api/pkg/apis/runtime/v1alpha2"
+	v10 "k8s.io/cri-api/pkg/apis/runtime/v1"
 	container "k8s.io/kubernetes/pkg/kubelet/container"
 	url "net/url"
 	reflect "reflect"
@@ -122,20 +122,6 @@ func (m *MockRuntime) Type() string {
 func (mr *MockRuntimeMockRecorder) Type() *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Type", reflect.TypeOf((*MockRuntime)(nil).Type))
-}
-
-// SupportsSingleFileMapping mocks base method
-func (m *MockRuntime) SupportsSingleFileMapping() bool {
-	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "SupportsSingleFileMapping")
-	ret0, _ := ret[0].(bool)
-	return ret0
-}
-
-// SupportsSingleFileMapping indicates an expected call of SupportsSingleFileMapping
-func (mr *MockRuntimeMockRecorder) SupportsSingleFileMapping() *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "SupportsSingleFileMapping", reflect.TypeOf((*MockRuntime)(nil).SupportsSingleFileMapping))
 }
 
 // Version mocks base method
@@ -284,7 +270,7 @@ func (mr *MockRuntimeMockRecorder) DeleteContainer(containerID interface{}) *gom
 }
 
 // PullImage mocks base method
-func (m *MockRuntime) PullImage(image container.ImageSpec, pullSecrets []v1.Secret, podSandboxConfig *v1alpha2.PodSandboxConfig) (string, error) {
+func (m *MockRuntime) PullImage(image container.ImageSpec, pullSecrets []v1.Secret, podSandboxConfig *v10.PodSandboxConfig) (string, error) {
 	m.ctrl.T.Helper()
 	ret := m.ctrl.Call(m, "PullImage", image, pullSecrets, podSandboxConfig)
 	ret0, _ := ret[0].(string)
@@ -463,7 +449,7 @@ func (m *MockImageService) EXPECT() *MockImageServiceMockRecorder {
 }
 
 // PullImage mocks base method
-func (m *MockImageService) PullImage(image container.ImageSpec, pullSecrets []v1.Secret, podSandboxConfig *v1alpha2.PodSandboxConfig) (string, error) {
+func (m *MockImageService) PullImage(image container.ImageSpec, pullSecrets []v1.Secret, podSandboxConfig *v10.PodSandboxConfig) (string, error) {
 	m.ctrl.T.Helper()
 	ret := m.ctrl.Call(m, "PullImage", image, pullSecrets, podSandboxConfig)
 	ret0, _ := ret[0].(string)

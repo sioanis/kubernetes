@@ -24,6 +24,7 @@ import (
 	"net/http"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 
 	"k8s.io/apiserver/pkg/endpoints/metrics"
@@ -54,18 +55,22 @@ const respLoggerContextKey respLoggerContextKeyType = iota
 // the http.ResponseWriter. We can recover panics from go-restful, and
 // the logging value is questionable.
 type respLogger struct {
-	hijacked           bool
-	statusRecorded     bool
-	status             int
-	statusStack        string
+	hijacked       bool
+	statusRecorded bool
+	status         int
+	statusStack    string
+	// mutex is used when accessing addedInfo and addedKeyValuePairs.
+	// They can be modified by other goroutine when logging happens (in case of request timeout)
+	mutex              sync.Mutex
 	addedInfo          strings.Builder
 	addedKeyValuePairs []interface{}
 	startTime          time.Time
 
 	captureErrorOutput bool
 
-	req *http.Request
-	w   http.ResponseWriter
+	req       *http.Request
+	userAgent string
+	w         http.ResponseWriter
 
 	logStacktracePred StacktracePred
 }
@@ -90,10 +95,12 @@ func DefaultStacktracePred(status int) bool {
 	return (status < http.StatusOK || status >= http.StatusInternalServerError) && status != http.StatusSwitchingProtocols
 }
 
+const withLoggingLevel = 3
+
 // WithLogging wraps the handler with logging.
 func WithLogging(handler http.Handler, pred StacktracePred) http.Handler {
 	return withLogging(handler, pred, func() bool {
-		return klog.V(3).Enabled()
+		return klog.V(withLoggingLevel).Enabled()
 	})
 }
 
@@ -141,6 +148,7 @@ func newLoggedWithStartTime(req *http.Request, w http.ResponseWriter, startTime 
 	logger := &respLogger{
 		startTime:         startTime,
 		req:               req,
+		userAgent:         req.UserAgent(),
 		w:                 w,
 		logStacktracePred: DefaultStacktracePred,
 	}
@@ -192,6 +200,8 @@ func StatusIsNot(statuses ...int) StacktracePred {
 
 // Addf adds additional data to be logged with this request.
 func (rl *respLogger) Addf(format string, data ...interface{}) {
+	rl.mutex.Lock()
+	defer rl.mutex.Unlock()
 	rl.addedInfo.WriteString("\n")
 	rl.addedInfo.WriteString(fmt.Sprintf(format, data...))
 }
@@ -203,6 +213,8 @@ func AddInfof(ctx context.Context, format string, data ...interface{}) {
 }
 
 func (rl *respLogger) AddKeyValue(key string, value interface{}) {
+	rl.mutex.Lock()
+	defer rl.mutex.Unlock()
 	rl.addedKeyValuePairs = append(rl.addedKeyValuePairs, key, value)
 }
 
@@ -213,6 +225,14 @@ func (rl *respLogger) AddKeyValue(key string, value interface{}) {
 func AddKeyValue(ctx context.Context, key string, value interface{}) {
 	if rl := respLoggerFromContext(ctx); rl != nil {
 		rl.AddKeyValue(key, value)
+	}
+}
+
+// SetStacktracePredicate sets a custom stacktrace predicate for the
+// logger associated with the given request context.
+func SetStacktracePredicate(ctx context.Context, pred StacktracePred) {
+	if rl := respLoggerFromContext(ctx); rl != nil {
+		rl.StacktraceWhen(pred)
 	}
 }
 
@@ -235,10 +255,18 @@ func (rl *respLogger) Log() {
 		"verb", verb,
 		"URI", rl.req.RequestURI,
 		"latency", latency,
-		"userAgent", rl.req.UserAgent(),
+		// We can't get UserAgent from rl.req.UserAgent() here as it accesses headers map,
+		// which can be modified in another goroutine when apiserver request times out.
+		// For example authentication filter modifies request's headers,
+		// This can cause apiserver to crash with unrecoverable fatal error.
+		// More info about concurrent read and write for maps: https://golang.org/doc/go1.6#runtime
+		"userAgent", rl.userAgent,
 		"audit-ID", auditID,
 		"srcIP", rl.req.RemoteAddr,
 	}
+	// Lock for accessing addedKeyValuePairs and addedInfo
+	rl.mutex.Lock()
+	defer rl.mutex.Unlock()
 	keysAndValues = append(keysAndValues, rl.addedKeyValuePairs...)
 
 	if rl.hijacked {
@@ -254,7 +282,7 @@ func (rl *respLogger) Log() {
 		}
 	}
 
-	klog.InfoSDepth(1, "HTTP", keysAndValues...)
+	klog.V(withLoggingLevel).InfoSDepth(1, "HTTP", keysAndValues...)
 }
 
 // Header implements http.ResponseWriter.

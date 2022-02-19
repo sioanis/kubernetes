@@ -25,6 +25,8 @@ import (
 	"io"
 	"io/ioutil"
 	"net/http"
+	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -38,6 +40,8 @@ import (
 	clientset "k8s.io/client-go/kubernetes"
 	restclient "k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
+	compbasemetrics "k8s.io/component-base/metrics"
+	"k8s.io/component-base/version/verflag"
 	"k8s.io/klog/v2"
 	"k8s.io/pod-security-admission/admission"
 	admissionapi "k8s.io/pod-security-admission/admission/api"
@@ -54,16 +58,22 @@ const maxRequestSize = int64(3 * 1024 * 1024)
 func NewServerCommand() *cobra.Command {
 	opts := options.NewOptions()
 
+	cmdName := "podsecurity-webhook"
+	if executable, err := os.Executable(); err == nil {
+		cmdName = filepath.Base(executable)
+	}
 	cmd := &cobra.Command{
-		Use: "podsecurity-webhook",
+		Use: cmdName,
 		Long: `The PodSecurity webhook is a standalone webhook server implementing the Pod
 Security Standards.`,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			verflag.PrintAndExitIfRequested()
 			return runServer(cmd.Context(), opts)
 		},
 		Args: cobra.NoArgs,
 	}
 	opts.AddFlags(cmd.Flags())
+	verflag.AddFlags(cmd.Flags())
 
 	return cmd
 }
@@ -96,6 +106,8 @@ type Server struct {
 	informerFactory kubeinformers.SharedInformerFactory
 
 	delegate *admission.Admission
+
+	metricsRegistry compbasemetrics.KubeRegistry
 }
 
 func (s *Server) Start(ctx context.Context) error {
@@ -108,6 +120,10 @@ func (s *Server) Start(ctx context.Context) error {
 	// debugging or proxy purposes. The API server will not connect to an http webhook.
 	mux.HandleFunc("/", s.HandleValidate)
 
+	// Serve the metrics.
+	mux.Handle("/metrics",
+		compbasemetrics.HandlerFor(s.metricsRegistry, compbasemetrics.HandlerOpts{ErrorHandling: compbasemetrics.ContinueOnError}))
+
 	if s.insecureServing != nil {
 		if err := s.insecureServing.Serve(mux, 0, ctx.Done()); err != nil {
 			return fmt.Errorf("failed to start insecure server: %w", err)
@@ -115,16 +131,21 @@ func (s *Server) Start(ctx context.Context) error {
 	}
 
 	var shutdownCh <-chan struct{}
+	var listenerStoppedCh <-chan struct{}
 	if s.secureServing != nil {
 		var err error
-		shutdownCh, err = s.secureServing.Serve(mux, 0, ctx.Done())
+		shutdownCh, listenerStoppedCh, err = s.secureServing.Serve(mux, 0, ctx.Done())
 		if err != nil {
 			return fmt.Errorf("failed to start secure server: %w", err)
 		}
 	}
 
+	<-listenerStoppedCh
+	klog.V(1).InfoS("[graceful-termination] HTTP Server has stopped listening")
+
 	// Wait for graceful shutdown.
 	<-shutdownCh
+	klog.V(1).Info("[graceful-termination] HTTP Server is exiting")
 
 	return nil
 }
@@ -197,7 +218,7 @@ func (s *Server) HandleValidate(w http.ResponseWriter, r *http.Request) {
 	}
 	klog.V(1).InfoS("received request", "UID", review.Request.UID, "kind", review.Request.Kind, "resource", review.Request.Resource)
 
-	attributes := admission.RequestAttributes(review.Request, codecs.UniversalDeserializer())
+	attributes := api.RequestAttributes(review.Request, codecs.UniversalDeserializer())
 	response := s.delegate.Validate(ctx, attributes)
 	response.UID = review.Request.UID // Response UID must match request UID
 	review.Response = response
@@ -263,11 +284,14 @@ func Setup(c *Config) (*Server, error) {
 	if err != nil {
 		return nil, fmt.Errorf("could not create PodSecurityRegistry: %w", err)
 	}
+	metrics := metrics.NewPrometheusRecorder(api.GetAPIVersion())
+	s.metricsRegistry = compbasemetrics.NewKubeRegistry()
+	metrics.MustRegister(s.metricsRegistry.MustRegister)
 
 	s.delegate = &admission.Admission{
 		Configuration:    c.PodSecurityConfig,
 		Evaluator:        evaluator,
-		Metrics:          metrics.NewPrometheusRecorder(api.GetAPIVersion()),
+		Metrics:          metrics,
 		PodSpecExtractor: admission.DefaultPodSpecExtractor{},
 		PodLister:        admission.PodListerFromClient(client),
 		NamespaceGetter:  admission.NamespaceGetterFromListerAndClient(namespaceLister, client),

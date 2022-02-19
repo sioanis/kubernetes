@@ -20,7 +20,6 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"fmt"
-	"io/ioutil"
 	"os"
 	"regexp"
 	"strings"
@@ -73,7 +72,7 @@ func initReg() RegistryList {
 		return registry
 	}
 
-	fileContent, err := ioutil.ReadFile(repoList)
+	fileContent, err := os.ReadFile(repoList)
 	if err != nil {
 		panic(fmt.Errorf("Error reading '%v' file contents: %v", repoList, err))
 	}
@@ -90,7 +89,7 @@ var (
 		GcAuthenticatedRegistry:  "gcr.io/authenticated-image-pulling",
 		PromoterE2eRegistry:      "k8s.gcr.io/e2e-test-images",
 		BuildImageRegistry:       "k8s.gcr.io/build-image",
-		InvalidRegistry:          "invalid.com/invalid",
+		InvalidRegistry:          "invalid.registry.k8s.io/invalid",
 		GcEtcdRegistry:           "k8s.gcr.io",
 		GcRegistry:               "k8s.gcr.io",
 		SigStorageRegistry:       "k8s.gcr.io/sig-storage",
@@ -208,9 +207,9 @@ func initImageConfigs(list RegistryList) (map[int]Config, map[int]Config) {
 	configs[CheckMetadataConcealment] = Config{list.PromoterE2eRegistry, "metadata-concealment", "1.6"}
 	configs[CudaVectorAdd] = Config{list.PromoterE2eRegistry, "cuda-vector-add", "1.0"}
 	configs[CudaVectorAdd2] = Config{list.PromoterE2eRegistry, "cuda-vector-add", "2.2"}
-	configs[DebianIptables] = Config{list.BuildImageRegistry, "debian-iptables", "bullseye-v1.0.0"}
+	configs[DebianIptables] = Config{list.BuildImageRegistry, "debian-iptables", "bullseye-v1.1.0"}
 	configs[EchoServer] = Config{list.PromoterE2eRegistry, "echoserver", "2.4"}
-	configs[Etcd] = Config{list.GcEtcdRegistry, "etcd", "3.4.13-0"}
+	configs[Etcd] = Config{list.GcEtcdRegistry, "etcd", "3.5.1-0"}
 	configs[GlusterDynamicProvisioner] = Config{list.PromoterE2eRegistry, "glusterdynamic-provisioner", "v1.3"}
 	configs[Httpd] = Config{list.PromoterE2eRegistry, "httpd", "2.4.38-2"}
 	configs[HttpdNew] = Config{list.PromoterE2eRegistry, "httpd", "2.4.39-2"}
@@ -219,7 +218,7 @@ func initImageConfigs(list RegistryList) (map[int]Config, map[int]Config) {
 	configs[JessieDnsutils] = Config{list.PromoterE2eRegistry, "jessie-dnsutils", "1.5"}
 	configs[Kitten] = Config{list.PromoterE2eRegistry, "kitten", "1.5"}
 	configs[Nautilus] = Config{list.PromoterE2eRegistry, "nautilus", "1.5"}
-	configs[NFSProvisioner] = Config{list.SigStorageRegistry, "nfs-provisioner", "v2.2.2"}
+	configs[NFSProvisioner] = Config{list.SigStorageRegistry, "nfs-provisioner", "v3.0.1"}
 	configs[Nginx] = Config{list.PromoterE2eRegistry, "nginx", "1.14-2"}
 	configs[NginxNew] = Config{list.PromoterE2eRegistry, "nginx", "1.15-2"}
 	configs[NodePerfNpbEp] = Config{list.PromoterE2eRegistry, "node-perf/npb-ep", "1.2"}

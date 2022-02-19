@@ -17,60 +17,39 @@ limitations under the License.
 package options
 
 import (
-	"fmt"
-	"net"
+	"time"
 
 	"github.com/spf13/pflag"
-	"k8s.io/apimachinery/pkg/util/validation/field"
-	kubeschedulerconfig "k8s.io/kubernetes/pkg/scheduler/apis/config"
+	componentbaseconfig "k8s.io/component-base/config"
 )
 
 // DeprecatedOptions contains deprecated options and their flags.
 // TODO remove these fields once the deprecated flags are removed.
 type DeprecatedOptions struct {
-	// The fields below here are placeholders for flags that can't be directly
-	// mapped into componentconfig.KubeSchedulerConfiguration.
-	Port int
-}
-
-// TODO: remove these insecure flags in v1.24
-func addDummyInsecureFlags(o *DeprecatedOptions, fs *pflag.FlagSet) {
-	var (
-		bindAddr = net.IPv4(127, 0, 0, 1)
-	)
-	fs.IPVar(&bindAddr, "address", bindAddr,
-		"The IP address on which to serve the insecure --port (set to 0.0.0.0 for all IPv4 interfaces and :: for all IPv6 interfaces).")
-	fs.MarkDeprecated("address", "This flag has no effect now and will be removed in v1.24. You can use --bind-address instead.")
-
-	fs.IntVar(&o.Port, "port", o.Port, "The port on which to serve unsecured, unauthenticated access. Set to 0 to disable.")
-	fs.MarkDeprecated("port", "This flag has no effect now and will be removed in v1.24. You can use --secure-port instead.")
+	componentbaseconfig.DebuggingConfiguration
+	componentbaseconfig.ClientConnectionConfiguration
+	// Note that only the deprecated options (lock-object-name and lock-object-namespace) are populated here.
+	componentbaseconfig.LeaderElectionConfiguration
+	// PodMaxUnschedulableQDuration is the maximum time a pod can stay in
+	// unschedulableQ. If a pod stays in unschedulableQ for longer than this
+	// value, the pod will be moved from unschedulableQ to backoffQ or activeQ.
+	// If this value is empty, the default value (60s) will be used.
+	PodMaxUnschedulableQDuration time.Duration
 }
 
 // AddFlags adds flags for the deprecated options.
-func (o *DeprecatedOptions) AddFlags(fs *pflag.FlagSet, cfg *kubeschedulerconfig.KubeSchedulerConfiguration) {
+func (o *DeprecatedOptions) AddFlags(fs *pflag.FlagSet) {
 	if o == nil {
 		return
 	}
 
-	addDummyInsecureFlags(o, fs)
-
-	fs.BoolVar(&cfg.EnableProfiling, "profiling", cfg.EnableProfiling, "DEPRECATED: enable profiling via web interface host:port/debug/pprof/. This parameter is ignored if a config file is specified in --config.")
-	fs.BoolVar(&cfg.EnableContentionProfiling, "contention-profiling", cfg.EnableContentionProfiling, "DEPRECATED: enable lock contention profiling, if profiling is enabled. This parameter is ignored if a config file is specified in --config.")
-	fs.StringVar(&cfg.ClientConnection.Kubeconfig, "kubeconfig", cfg.ClientConnection.Kubeconfig, "DEPRECATED: path to kubeconfig file with authorization and master location information. This parameter is ignored if a config file is specified in --config.")
-	fs.StringVar(&cfg.ClientConnection.ContentType, "kube-api-content-type", cfg.ClientConnection.ContentType, "DEPRECATED: content type of requests sent to apiserver. This parameter is ignored if a config file is specified in --config.")
-	fs.Float32Var(&cfg.ClientConnection.QPS, "kube-api-qps", cfg.ClientConnection.QPS, "DEPRECATED: QPS to use while talking with kubernetes apiserver. This parameter is ignored if a config file is specified in --config.")
-	fs.Int32Var(&cfg.ClientConnection.Burst, "kube-api-burst", cfg.ClientConnection.Burst, "DEPRECATED: burst to use while talking with kubernetes apiserver. This parameter is ignored if a config file is specified in --config.")
-	fs.StringVar(&cfg.LeaderElection.ResourceNamespace, "lock-object-namespace", cfg.LeaderElection.ResourceNamespace, "DEPRECATED: define the namespace of the lock object. Will be removed in favor of leader-elect-resource-namespace. This parameter is ignored if a config file is specified in --config.")
-	fs.StringVar(&cfg.LeaderElection.ResourceName, "lock-object-name", cfg.LeaderElection.ResourceName, "DEPRECATED: define the name of the lock object. Will be removed in favor of leader-elect-resource-name. This parameter is ignored if a config file is specified in --config.")
-}
-
-// Validate validates the deprecated scheduler options.
-func (o *DeprecatedOptions) Validate() []error {
-	var errs []error
-
-	// TODO: delete this check after insecure flags removed in v1.24
-	if o.Port != 0 {
-		errs = append(errs, field.Required(field.NewPath("port"), fmt.Sprintf("invalid port value %d: only zero is allowed", o.Port)))
-	}
-	return errs
+	fs.BoolVar(&o.EnableProfiling, "profiling", true, "DEPRECATED: enable profiling via web interface host:port/debug/pprof/. This parameter is ignored if a config file is specified in --config.")
+	fs.BoolVar(&o.EnableContentionProfiling, "contention-profiling", true, "DEPRECATED: enable lock contention profiling, if profiling is enabled. This parameter is ignored if a config file is specified in --config.")
+	fs.StringVar(&o.Kubeconfig, "kubeconfig", "", "DEPRECATED: path to kubeconfig file with authorization and master location information. This parameter is ignored if a config file is specified in --config.")
+	fs.StringVar(&o.ContentType, "kube-api-content-type", "application/vnd.kubernetes.protobuf", "DEPRECATED: content type of requests sent to apiserver. This parameter is ignored if a config file is specified in --config.")
+	fs.Float32Var(&o.QPS, "kube-api-qps", 50.0, "DEPRECATED: QPS to use while talking with kubernetes apiserver. This parameter is ignored if a config file is specified in --config.")
+	fs.Int32Var(&o.Burst, "kube-api-burst", 100, "DEPRECATED: burst to use while talking with kubernetes apiserver. This parameter is ignored if a config file is specified in --config.")
+	fs.StringVar(&o.ResourceNamespace, "lock-object-namespace", "kube-system", "DEPRECATED: define the namespace of the lock object. Will be removed in favor of leader-elect-resource-namespace. This parameter is ignored if a config file is specified in --config.")
+	fs.StringVar(&o.ResourceName, "lock-object-name", "kube-scheduler", "DEPRECATED: define the name of the lock object. Will be removed in favor of leader-elect-resource-name. This parameter is ignored if a config file is specified in --config.")
+	fs.DurationVar(&o.PodMaxUnschedulableQDuration, "pod-max-unschedulableq-duration", 60*time.Second, "DEPRECATED: the maximum time a pod can stay in unschedulableQ. If a pod stays in unschedulableQ for longer than this value, the pod will be moved from unschedulableQ to backoffQ or activeQ. This flag is deprecated and will be removed in 1.26")
 }

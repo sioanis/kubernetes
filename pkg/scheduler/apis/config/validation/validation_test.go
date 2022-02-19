@@ -17,7 +17,6 @@ limitations under the License.
 package validation
 
 import (
-	"errors"
 	"fmt"
 	"testing"
 	"time"
@@ -199,20 +198,8 @@ func TestValidateKubeSchedulerConfigurationV1beta2(t *testing.T) {
 		BindVerb:       "bar",
 	})
 
-	badRemovedPlugins1 := validConfig.DeepCopy()
-	badRemovedPlugins1.Profiles[0].Plugins.Score.Enabled = append(badRemovedPlugins1.Profiles[0].Plugins.Score.Enabled, config.Plugin{Name: "ServiceAffinity", Weight: 2})
-
-	badRemovedPlugins3 := validConfig.DeepCopy()
-	badRemovedPlugins3.Profiles[0].Plugins.Score.Enabled = append(badRemovedPlugins3.Profiles[0].Plugins.Score.Enabled, config.Plugin{Name: "NodeResourcesMostAllocated", Weight: 2})
-
 	goodRemovedPlugins2 := validConfig.DeepCopy()
 	goodRemovedPlugins2.Profiles[0].Plugins.Score.Enabled = append(goodRemovedPlugins2.Profiles[0].Plugins.Score.Enabled, config.Plugin{Name: "PodTopologySpread", Weight: 2})
-
-	deprecatedPluginsConfig := validConfig.DeepCopy()
-	deprecatedPluginsConfig.Profiles[0].PluginConfig = append(deprecatedPluginsConfig.Profiles[0].PluginConfig, config.PluginConfig{
-		Name: "NodeResourcesLeastAllocated",
-		Args: &config.NodeResourcesLeastAllocatedArgs{},
-	})
 
 	scenarios := map[string]struct {
 		expectedToFail bool
@@ -291,22 +278,9 @@ func TestValidateKubeSchedulerConfigurationV1beta2(t *testing.T) {
 			expectedToFail: true,
 			config:         mismatchQueueSort,
 		},
-		"bad-removed-plugins-1": {
-			expectedToFail: true,
-			config:         badRemovedPlugins1,
-		},
-		"bad-removed-plugins-3": {
-			expectedToFail: true,
-			config:         badRemovedPlugins3,
-		},
 		"good-removed-plugins-2": {
 			expectedToFail: false,
 			config:         goodRemovedPlugins2,
-		},
-		"bad-plugins-config": {
-			expectedToFail: true,
-			config:         deprecatedPluginsConfig,
-			errorString:    "profiles[0].pluginConfig[1]: Invalid value: \"NodeResourcesLeastAllocated\": was removed in version \"kubescheduler.config.k8s.io/v1beta2\" (KubeSchedulerConfiguration is version \"kubescheduler.config.k8s.io/v1beta2\")",
 		},
 	}
 
@@ -498,23 +472,8 @@ func TestValidateKubeSchedulerConfigurationV1beta3(t *testing.T) {
 		BindVerb:       "bar",
 	})
 
-	badRemovedPlugins1 := validConfig.DeepCopy()
-	badRemovedPlugins1.Profiles[0].Plugins.Score.Enabled = append(badRemovedPlugins1.Profiles[0].Plugins.Score.Enabled, config.Plugin{Name: "ServiceAffinity", Weight: 2})
-
-	badRemovedPlugins2 := validConfig.DeepCopy()
-	badRemovedPlugins2.Profiles[0].Plugins.Score.Enabled = append(badRemovedPlugins2.Profiles[0].Plugins.Score.Enabled, config.Plugin{Name: "RequestedToCapacityRatio", Weight: 2})
-
-	badRemovedPlugins3 := validConfig.DeepCopy()
-	badRemovedPlugins3.Profiles[0].Plugins.Score.Enabled = append(badRemovedPlugins3.Profiles[0].Plugins.Score.Enabled, config.Plugin{Name: "NodeResourcesMostAllocated", Weight: 2})
-
 	goodRemovedPlugins2 := validConfig.DeepCopy()
 	goodRemovedPlugins2.Profiles[0].Plugins.Score.Enabled = append(goodRemovedPlugins2.Profiles[0].Plugins.Score.Enabled, config.Plugin{Name: "PodTopologySpread", Weight: 2})
-
-	deprecatedPluginsConfig := validConfig.DeepCopy()
-	deprecatedPluginsConfig.Profiles[0].PluginConfig = append(deprecatedPluginsConfig.Profiles[0].PluginConfig, config.PluginConfig{
-		Name: "NodeResourcesLeastAllocated",
-		Args: &config.NodeResourcesLeastAllocatedArgs{},
-	})
 
 	scenarios := map[string]struct {
 		expectedToFail bool
@@ -593,26 +552,9 @@ func TestValidateKubeSchedulerConfigurationV1beta3(t *testing.T) {
 			expectedToFail: true,
 			config:         mismatchQueueSort,
 		},
-		"bad-removed-plugins-1": {
-			expectedToFail: true,
-			config:         badRemovedPlugins1,
-		},
-		"bad-removed-plugins-2": {
-			expectedToFail: true,
-			config:         badRemovedPlugins2,
-		},
-		"bad-removed-plugins-3": {
-			expectedToFail: true,
-			config:         badRemovedPlugins3,
-		},
 		"good-removed-plugins-2": {
 			expectedToFail: false,
 			config:         goodRemovedPlugins2,
-		},
-		"bad-plugins-config": {
-			expectedToFail: true,
-			config:         deprecatedPluginsConfig,
-			errorString:    "profiles[0].pluginConfig[1]: Invalid value: \"NodeResourcesLeastAllocated\": was removed in version \"kubescheduler.config.k8s.io/v1beta2\" (KubeSchedulerConfiguration is version \"kubescheduler.config.k8s.io/v1beta3\")",
 		},
 	}
 
@@ -629,129 +571,6 @@ func TestValidateKubeSchedulerConfigurationV1beta3(t *testing.T) {
 
 			if errs != nil && scenario.errorString != "" && errs.Error() != scenario.errorString {
 				t.Errorf("Unexpected error string\n want:\t%s\n got:\t%s", scenario.errorString, errs.Error())
-			}
-		})
-	}
-}
-
-func TestValidatePolicy(t *testing.T) {
-	tests := []struct {
-		policy   config.Policy
-		expected error
-		name     string
-	}{
-		{
-			name:     "no weight defined in policy",
-			policy:   config.Policy{Priorities: []config.PriorityPolicy{{Name: "NoWeightPriority"}}},
-			expected: errors.New("priority NoWeightPriority should have a positive weight applied to it or it has overflown"),
-		},
-		{
-			name:     "policy weight is not positive",
-			policy:   config.Policy{Priorities: []config.PriorityPolicy{{Name: "NoWeightPriority", Weight: 0}}},
-			expected: errors.New("priority NoWeightPriority should have a positive weight applied to it or it has overflown"),
-		},
-		{
-			name:     "valid weight priority",
-			policy:   config.Policy{Priorities: []config.PriorityPolicy{{Name: "WeightPriority", Weight: 2}}},
-			expected: nil,
-		},
-		{
-			name:     "invalid negative weight policy",
-			policy:   config.Policy{Priorities: []config.PriorityPolicy{{Name: "WeightPriority", Weight: -2}}},
-			expected: errors.New("priority WeightPriority should have a positive weight applied to it or it has overflown"),
-		},
-		{
-			name:     "policy weight exceeds maximum",
-			policy:   config.Policy{Priorities: []config.PriorityPolicy{{Name: "WeightPriority", Weight: config.MaxWeight}}},
-			expected: errors.New("priority WeightPriority should have a positive weight applied to it or it has overflown"),
-		},
-		{
-			name:     "valid weight in policy extender config",
-			policy:   config.Policy{Extenders: []config.Extender{{URLPrefix: "http://127.0.0.1:8081/extender", PrioritizeVerb: "prioritize", Weight: 2}}},
-			expected: nil,
-		},
-		{
-			name:     "invalid negative weight in policy extender config",
-			policy:   config.Policy{Extenders: []config.Extender{{URLPrefix: "http://127.0.0.1:8081/extender", PrioritizeVerb: "prioritize", Weight: -2}}},
-			expected: errors.New("extenders[0].weight: Invalid value: -2: must have a positive weight applied to it"),
-		},
-		{
-			name:     "valid filter verb and url prefix",
-			policy:   config.Policy{Extenders: []config.Extender{{URLPrefix: "http://127.0.0.1:8081/extender", FilterVerb: "filter"}}},
-			expected: nil,
-		},
-		{
-			name:     "valid preemt verb and urlprefix",
-			policy:   config.Policy{Extenders: []config.Extender{{URLPrefix: "http://127.0.0.1:8081/extender", PreemptVerb: "preempt"}}},
-			expected: nil,
-		},
-		{
-			name: "invalid multiple extenders",
-			policy: config.Policy{
-				Extenders: []config.Extender{
-					{URLPrefix: "http://127.0.0.1:8081/extender", BindVerb: "bind"},
-					{URLPrefix: "http://127.0.0.1:8082/extender", BindVerb: "bind"},
-				}},
-			expected: errors.New("extenders: Invalid value: \"found 2 extenders implementing bind\": only one extender can implement bind"),
-		},
-		{
-			name: "invalid duplicate extender resource name",
-			policy: config.Policy{
-				Extenders: []config.Extender{
-					{URLPrefix: "http://127.0.0.1:8081/extender", ManagedResources: []config.ExtenderManagedResource{{Name: "foo.com/bar"}}},
-					{URLPrefix: "http://127.0.0.1:8082/extender", BindVerb: "bind", ManagedResources: []config.ExtenderManagedResource{{Name: "foo.com/bar"}}},
-				}},
-			expected: errors.New("extenders[1].managedResources[0].name: Invalid value: \"foo.com/bar\": duplicate extender managed resource name"),
-		},
-		{
-			name: "invalid extended resource name",
-			policy: config.Policy{
-				Extenders: []config.Extender{
-					{URLPrefix: "http://127.0.0.1:8081/extender", ManagedResources: []config.ExtenderManagedResource{{Name: "kubernetes.io/foo"}}},
-				}},
-			expected: errors.New("extenders[0].managedResources[0].name: Invalid value: \"kubernetes.io/foo\": is an invalid extended resource name"),
-		},
-		{
-			name: "invalid redeclared RequestedToCapacityRatio custom priority",
-			policy: config.Policy{
-				Priorities: []config.PriorityPolicy{
-					{Name: "customPriority1", Weight: 1, Argument: &config.PriorityArgument{RequestedToCapacityRatioArguments: &config.RequestedToCapacityRatioArguments{}}},
-					{Name: "customPriority2", Weight: 1, Argument: &config.PriorityArgument{RequestedToCapacityRatioArguments: &config.RequestedToCapacityRatioArguments{}}},
-				},
-			},
-			expected: errors.New("priority \"customPriority2\" redeclares custom priority \"RequestedToCapacityRatio\", from: \"customPriority1\""),
-		},
-		{
-			name: "different weights for LabelPreference custom priority",
-			policy: config.Policy{
-				Priorities: []config.PriorityPolicy{
-					{Name: "customPriority1", Weight: 1, Argument: &config.PriorityArgument{LabelPreference: &config.LabelPreference{}}},
-					{Name: "customPriority2", Weight: 2, Argument: &config.PriorityArgument{LabelPreference: &config.LabelPreference{}}},
-				},
-			},
-			expected: errors.New("LabelPreference  priority \"customPriority2\" has a different weight with \"customPriority1\""),
-		},
-		{
-			name: "invalid hardPodAffinitySymmetricWeight, above the range",
-			policy: config.Policy{
-				HardPodAffinitySymmetricWeight: 101,
-			},
-			expected: errors.New("hardPodAffinitySymmetricWeight: Invalid value: 101: not in valid range [0-100]"),
-		},
-		{
-			name: "invalid hardPodAffinitySymmetricWeight, below the range",
-			policy: config.Policy{
-				HardPodAffinitySymmetricWeight: -1,
-			},
-			expected: errors.New("hardPodAffinitySymmetricWeight: Invalid value: -1: not in valid range [0-100]"),
-		},
-	}
-
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			actual := ValidatePolicy(test.policy)
-			if fmt.Sprint(test.expected) != fmt.Sprint(actual) {
-				t.Errorf("expected: %s, actual: %s", test.expected, actual)
 			}
 		})
 	}

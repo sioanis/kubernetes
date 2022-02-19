@@ -23,6 +23,7 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/uuid"
 	apiserveroptions "k8s.io/apiserver/pkg/server/options"
 	utilfeature "k8s.io/apiserver/pkg/util/feature"
@@ -43,7 +44,6 @@ import (
 	schedulerappconfig "k8s.io/kubernetes/cmd/kube-scheduler/app/config"
 	"k8s.io/kubernetes/pkg/scheduler"
 	kubeschedulerconfig "k8s.io/kubernetes/pkg/scheduler/apis/config"
-	"k8s.io/kubernetes/pkg/scheduler/apis/config/latest"
 	"k8s.io/kubernetes/pkg/scheduler/apis/config/validation"
 	netutils "k8s.io/utils/net"
 )
@@ -51,7 +51,7 @@ import (
 // Options has all the params needed to run a Scheduler
 type Options struct {
 	// The default values.
-	ComponentConfig kubeschedulerconfig.KubeSchedulerConfiguration
+	ComponentConfig *kubeschedulerconfig.KubeSchedulerConfiguration
 
 	SecureServing  *apiserveroptions.SecureServingOptionsWithLoopback
 	Authentication *apiserveroptions.DelegatingAuthenticationOptions
@@ -59,6 +59,7 @@ type Options struct {
 	Metrics        *metrics.Options
 	Logs           *logs.Options
 	Deprecated     *DeprecatedOptions
+	LeaderElection *componentbaseconfig.LeaderElectionConfiguration
 
 	// ConfigFile is the location of the scheduler server's configuration file.
 	ConfigFile string
@@ -68,25 +69,30 @@ type Options struct {
 
 	Master string
 
-	// flags hold the parsed CLI flags.
-	flags *cliflag.NamedFlagSets
+	// Flags hold the parsed CLI flags.
+	Flags *cliflag.NamedFlagSets
 }
 
 // NewOptions returns default scheduler app options.
-func NewOptions() (*Options, error) {
-	cfg, err := latest.Default()
-	if err != nil {
-		return nil, err
-	}
-
+func NewOptions() *Options {
 	o := &Options{
-		ComponentConfig: *cfg,
-		SecureServing:   apiserveroptions.NewSecureServingOptions().WithLoopback(),
-		Authentication:  apiserveroptions.NewDelegatingAuthenticationOptions(),
-		Authorization:   apiserveroptions.NewDelegatingAuthorizationOptions(),
-		Deprecated:      &DeprecatedOptions{},
-		Metrics:         metrics.NewOptions(),
-		Logs:            logs.NewOptions(),
+		SecureServing:  apiserveroptions.NewSecureServingOptions().WithLoopback(),
+		Authentication: apiserveroptions.NewDelegatingAuthenticationOptions(),
+		Authorization:  apiserveroptions.NewDelegatingAuthorizationOptions(),
+		Deprecated: &DeprecatedOptions{
+			PodMaxUnschedulableQDuration: 60 * time.Second,
+		},
+		LeaderElection: &componentbaseconfig.LeaderElectionConfiguration{
+			LeaderElect:       true,
+			LeaseDuration:     metav1.Duration{Duration: 15 * time.Second},
+			RenewDeadline:     metav1.Duration{Duration: 10 * time.Second},
+			RetryPeriod:       metav1.Duration{Duration: 2 * time.Second},
+			ResourceLock:      "leases",
+			ResourceName:      "kube-scheduler",
+			ResourceNamespace: "kube-system",
+		},
+		Metrics: metrics.NewOptions(),
+		Logs:    logs.NewOptions(),
 	}
 
 	o.Authentication.TolerateInClusterLookupFailure = true
@@ -98,43 +104,81 @@ func NewOptions() (*Options, error) {
 	o.SecureServing.ServerCert.PairName = "kube-scheduler"
 	o.SecureServing.BindPort = kubeschedulerconfig.DefaultKubeSchedulerPort
 
-	return o, nil
+	o.initFlags()
+
+	return o
 }
 
-// Complete obtains the CLI args related with leaderelection, and override the values in `cfg`.
+// ApplyDeprecated obtains the deprecated CLI args and set them to `o.ComponentConfig` if specified.
+func (o *Options) ApplyDeprecated() {
+	if o.Flags == nil {
+		return
+	}
+	// Obtain deprecated CLI args. Set them to cfg if specified in command line.
+	deprecated := o.Flags.FlagSet("deprecated")
+	if deprecated.Changed("profiling") {
+		o.ComponentConfig.EnableProfiling = o.Deprecated.EnableProfiling
+	}
+	if deprecated.Changed("contention-profiling") {
+		o.ComponentConfig.EnableContentionProfiling = o.Deprecated.EnableContentionProfiling
+	}
+	if deprecated.Changed("kubeconfig") {
+		o.ComponentConfig.ClientConnection.Kubeconfig = o.Deprecated.Kubeconfig
+	}
+	if deprecated.Changed("kube-api-content-type") {
+		o.ComponentConfig.ClientConnection.ContentType = o.Deprecated.ContentType
+	}
+	if deprecated.Changed("kube-api-qps") {
+		o.ComponentConfig.ClientConnection.QPS = o.Deprecated.QPS
+	}
+	if deprecated.Changed("kube-api-burst") {
+		o.ComponentConfig.ClientConnection.Burst = o.Deprecated.Burst
+	}
+	if deprecated.Changed("lock-object-namespace") {
+		o.ComponentConfig.LeaderElection.ResourceNamespace = o.Deprecated.ResourceNamespace
+	}
+	if deprecated.Changed("lock-object-name") {
+		o.ComponentConfig.LeaderElection.ResourceName = o.Deprecated.ResourceName
+	}
+}
+
+// ApplyLeaderElectionTo obtains the CLI args related with leaderelection, and override the values in `cfg`.
 // Then the `cfg` object is injected into the `options` object.
-func (o *Options) Complete(cfg *kubeschedulerconfig.KubeSchedulerConfiguration) {
+func (o *Options) ApplyLeaderElectionTo(cfg *kubeschedulerconfig.KubeSchedulerConfiguration) {
+	if o.Flags == nil {
+		return
+	}
 	// Obtain CLI args related with leaderelection. Set them to `cfg` if specified in command line.
-	leaderelection := o.Flags().FlagSet("leader election")
+	leaderelection := o.Flags.FlagSet("leader election")
 	if leaderelection.Changed("leader-elect") {
-		cfg.LeaderElection.LeaderElect = o.ComponentConfig.LeaderElection.LeaderElect
+		cfg.LeaderElection.LeaderElect = o.LeaderElection.LeaderElect
 	}
 	if leaderelection.Changed("leader-elect-lease-duration") {
-		cfg.LeaderElection.LeaseDuration = o.ComponentConfig.LeaderElection.LeaseDuration
+		cfg.LeaderElection.LeaseDuration = o.LeaderElection.LeaseDuration
 	}
 	if leaderelection.Changed("leader-elect-renew-deadline") {
-		cfg.LeaderElection.RenewDeadline = o.ComponentConfig.LeaderElection.RenewDeadline
+		cfg.LeaderElection.RenewDeadline = o.LeaderElection.RenewDeadline
 	}
 	if leaderelection.Changed("leader-elect-retry-period") {
-		cfg.LeaderElection.RetryPeriod = o.ComponentConfig.LeaderElection.RetryPeriod
+		cfg.LeaderElection.RetryPeriod = o.LeaderElection.RetryPeriod
 	}
 	if leaderelection.Changed("leader-elect-resource-lock") {
-		cfg.LeaderElection.ResourceLock = o.ComponentConfig.LeaderElection.ResourceLock
+		cfg.LeaderElection.ResourceLock = o.LeaderElection.ResourceLock
 	}
 	if leaderelection.Changed("leader-elect-resource-name") {
-		cfg.LeaderElection.ResourceName = o.ComponentConfig.LeaderElection.ResourceName
+		cfg.LeaderElection.ResourceName = o.LeaderElection.ResourceName
 	}
 	if leaderelection.Changed("leader-elect-resource-namespace") {
-		cfg.LeaderElection.ResourceNamespace = o.ComponentConfig.LeaderElection.ResourceNamespace
+		cfg.LeaderElection.ResourceNamespace = o.LeaderElection.ResourceNamespace
 	}
 
-	o.ComponentConfig = *cfg
+	o.ComponentConfig = cfg
 }
 
-// Flags returns flags for a specific scheduler by section name
-func (o *Options) Flags() *cliflag.NamedFlagSets {
-	if o.flags != nil {
-		return o.flags
+// initFlags initializes flags by section name.
+func (o *Options) initFlags() {
+	if o.Flags != nil {
+		return
 	}
 
 	nfs := cliflag.NamedFlagSets{}
@@ -143,34 +187,32 @@ func (o *Options) Flags() *cliflag.NamedFlagSets {
 	fs.StringVar(&o.WriteConfigTo, "write-config-to", o.WriteConfigTo, "If set, write the configuration values to this file and exit.")
 	fs.StringVar(&o.Master, "master", o.Master, "The address of the Kubernetes API server (overrides any value in kubeconfig)")
 
-	// In some tests, o.SecureServing can be nil.
-	if o.SecureServing != nil {
-		o.SecureServing.AddFlags(nfs.FlagSet("secure serving"))
-	}
+	o.SecureServing.AddFlags(nfs.FlagSet("secure serving"))
 	o.Authentication.AddFlags(nfs.FlagSet("authentication"))
 	o.Authorization.AddFlags(nfs.FlagSet("authorization"))
-	o.Deprecated.AddFlags(nfs.FlagSet("deprecated"), &o.ComponentConfig)
-
-	options.BindLeaderElectionFlags(&o.ComponentConfig.LeaderElection, nfs.FlagSet("leader election"))
+	o.Deprecated.AddFlags(nfs.FlagSet("deprecated"))
+	options.BindLeaderElectionFlags(o.LeaderElection, nfs.FlagSet("leader election"))
 	utilfeature.DefaultMutableFeatureGate.AddFlag(nfs.FlagSet("feature gate"))
 	o.Metrics.AddFlags(nfs.FlagSet("metrics"))
 	o.Logs.AddFlags(nfs.FlagSet("logs"))
 
-	o.flags = &nfs
-	return o.flags
+	o.Flags = &nfs
 }
 
 // ApplyTo applies the scheduler options to the given scheduler app configuration.
 func (o *Options) ApplyTo(c *schedulerappconfig.Config) error {
 	if len(o.ConfigFile) == 0 {
-		c.ComponentConfig = o.ComponentConfig
+		// If the --config arg is not specified, honor the deprecated as well as leader election CLI args.
+		o.ApplyDeprecated()
+		o.ApplyLeaderElectionTo(o.ComponentConfig)
+		c.ComponentConfig = *o.ComponentConfig
 	} else {
 		cfg, err := loadConfigFromFile(o.ConfigFile)
 		if err != nil {
 			return err
 		}
-		// Honor the CLI args before assigning `cfg` to `c.ComponentConfig`.
-		o.Complete(cfg)
+		// If the --config arg is specified, honor the leader election CLI args only.
+		o.ApplyLeaderElectionTo(cfg)
 
 		if err := validation.ValidateKubeSchedulerConfiguration(cfg); err != nil {
 			return err
@@ -191,7 +233,12 @@ func (o *Options) ApplyTo(c *schedulerappconfig.Config) error {
 		}
 	}
 	o.Metrics.Apply()
-	o.Logs.Apply()
+
+	// Apply value independently instead of using ApplyDeprecated() because it can't be configured via ComponentConfig.
+	if o.Deprecated != nil {
+		c.PodMaxUnschedulableQDuration = o.Deprecated.PodMaxUnschedulableQDuration
+	}
+
 	return nil
 }
 
@@ -199,15 +246,13 @@ func (o *Options) ApplyTo(c *schedulerappconfig.Config) error {
 func (o *Options) Validate() []error {
 	var errs []error
 
-	if err := validation.ValidateKubeSchedulerConfiguration(&o.ComponentConfig); err != nil {
+	if err := validation.ValidateKubeSchedulerConfiguration(o.ComponentConfig); err != nil {
 		errs = append(errs, err.Errors()...)
 	}
 	errs = append(errs, o.SecureServing.Validate()...)
 	errs = append(errs, o.Authentication.Validate()...)
 	errs = append(errs, o.Authorization.Validate()...)
-	errs = append(errs, o.Deprecated.Validate()...)
 	errs = append(errs, o.Metrics.Validate()...)
-	errs = append(errs, o.Logs.Validate()...)
 
 	return errs
 }

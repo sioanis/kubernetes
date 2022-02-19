@@ -30,6 +30,10 @@ const (
 	minimumSeats = 1
 
 	// the maximum number of seats a request can occupy
+	//
+	// NOTE: work_estimate_seats_samples metric uses the value of maximumSeats
+	// as the upper bound, so when we change maximumSeats we should also
+	// update the buckets of the metric.
 	maximumSeats = 10
 )
 
@@ -83,10 +87,10 @@ func NewWorkEstimator(objectCountFn objectCountGetterFunc, watchCountFn watchCou
 // WorkEstimatorFunc returns the estimated work of a given request.
 // This function will be used by the Priority & Fairness filter to
 // estimate the work of of incoming requests.
-type WorkEstimatorFunc func(*http.Request) WorkEstimate
+type WorkEstimatorFunc func(request *http.Request, flowSchemaName, priorityLevelName string) WorkEstimate
 
-func (e WorkEstimatorFunc) EstimateWork(r *http.Request) WorkEstimate {
-	return e(r)
+func (e WorkEstimatorFunc) EstimateWork(r *http.Request, flowSchemaName, priorityLevelName string) WorkEstimate {
+	return e(r, flowSchemaName, priorityLevelName)
 }
 
 type workEstimator struct {
@@ -96,7 +100,7 @@ type workEstimator struct {
 	mutatingWorkEstimator WorkEstimatorFunc
 }
 
-func (e *workEstimator) estimate(r *http.Request) WorkEstimate {
+func (e *workEstimator) estimate(r *http.Request, flowSchemaName, priorityLevelName string) WorkEstimate {
 	requestInfo, ok := apirequest.RequestInfoFrom(r.Context())
 	if !ok {
 		klog.ErrorS(fmt.Errorf("no RequestInfo found in context"), "Failed to estimate work for the request", "URI", r.RequestURI)
@@ -106,9 +110,9 @@ func (e *workEstimator) estimate(r *http.Request) WorkEstimate {
 
 	switch requestInfo.Verb {
 	case "list":
-		return e.listWorkEstimator.EstimateWork(r)
+		return e.listWorkEstimator.EstimateWork(r, flowSchemaName, priorityLevelName)
 	case "create", "update", "patch", "delete":
-		return e.mutatingWorkEstimator.EstimateWork(r)
+		return e.mutatingWorkEstimator.EstimateWork(r, flowSchemaName, priorityLevelName)
 	}
 
 	return WorkEstimate{InitialSeats: minimumSeats}

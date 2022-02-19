@@ -23,7 +23,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	componentbaseconfigv1alpha1 "k8s.io/component-base/config/v1alpha1"
-	v1 "k8s.io/kube-scheduler/config/v1"
 	"sigs.k8s.io/yaml"
 )
 
@@ -94,14 +93,23 @@ type KubeSchedulerConfiguration struct {
 
 // DecodeNestedObjects decodes plugin args for known types.
 func (c *KubeSchedulerConfiguration) DecodeNestedObjects(d runtime.Decoder) error {
+	var strictDecodingErrs []error
 	for i := range c.Profiles {
 		prof := &c.Profiles[i]
 		for j := range prof.PluginConfig {
 			err := prof.PluginConfig[j].decodeNestedObjects(d)
 			if err != nil {
-				return fmt.Errorf("decoding .profiles[%d].pluginConfig[%d]: %w", i, j, err)
+				decodingErr := fmt.Errorf("decoding .profiles[%d].pluginConfig[%d]: %w", i, j, err)
+				if runtime.IsStrictDecodingError(err) {
+					strictDecodingErrs = append(strictDecodingErrs, decodingErr)
+				} else {
+					return decodingErr
+				}
 			}
 		}
+	}
+	if len(strictDecodingErrs) > 0 {
+		return runtime.NewStrictDecodingError(strictDecodingErrs)
 	}
 	return nil
 }
@@ -185,6 +193,24 @@ type Plugins struct {
 
 	// PostBind is a list of plugins that should be invoked after a pod is successfully bound.
 	PostBind PluginSet `json:"postBind,omitempty"`
+
+	// MultiPoint is a simplified config section to enable plugins for all valid extension points.
+	// Plugins enabled through MultiPoint will automatically register for every individual extension
+	// point the plugin has implemented. Disabling a plugin through MultiPoint disables that behavior.
+	// The same is true for disabling "*" through MultiPoint (no default plugins will be automatically registered).
+	// Plugins can still be disabled through their individual extension points.
+	//
+	// In terms of precedence, plugin config follows this basic hierarchy
+	//   1. Specific extension points
+	//   2. Explicitly configured MultiPoint plugins
+	//   3. The set of default plugins, as MultiPoint plugins
+	// This implies that a higher precedence plugin will run first and overwrite any settings within MultiPoint.
+	// Explicitly user-configured plugins also take a higher precedence over default plugins.
+	// Within this hierarchy, an Enabled setting takes precedence over Disabled. For example, if a plugin is
+	// set in both `multiPoint.Enabled` and `multiPoint.Disabled`, the plugin will be enabled. Similarly,
+	// including `multiPoint.Disabled = '*'` and `multiPoint.Enabled = pluginA` will still register that specific
+	// plugin through MultiPoint. This follows the same behavior as all other extension point configurations.
+	MultiPoint PluginSet `json:"multiPoint,omitempty"`
 }
 
 // PluginSet specifies enabled and disabled plugins for an extension point.
@@ -228,15 +254,21 @@ func (c *PluginConfig) decodeNestedObjects(d runtime.Decoder) error {
 		return nil
 	}
 
+	var strictDecodingErr error
 	obj, parsedGvk, err := d.Decode(c.Args.Raw, &gvk, nil)
 	if err != nil {
-		return fmt.Errorf("decoding args for plugin %s: %w", c.Name, err)
+		decodingArgsErr := fmt.Errorf("decoding args for plugin %s: %w", c.Name, err)
+		if obj != nil && runtime.IsStrictDecodingError(err) {
+			strictDecodingErr = runtime.NewStrictDecodingError([]error{decodingArgsErr})
+		} else {
+			return decodingArgsErr
+		}
 	}
 	if parsedGvk.GroupKind() != gvk.GroupKind() {
 		return fmt.Errorf("args for plugin %s were not of type %s, got %s", c.Name, gvk.GroupKind(), parsedGvk.GroupKind())
 	}
 	c.Args.Object = obj
-	return nil
+	return strictDecodingErr
 }
 
 func (c *PluginConfig) encodeNestedObjects(e runtime.Encoder) error {
@@ -280,7 +312,7 @@ type Extender struct {
 	// EnableHTTPS specifies whether https should be used to communicate with the extender
 	EnableHTTPS bool `json:"enableHTTPS,omitempty"`
 	// TLSConfig specifies the transport layer security config
-	TLSConfig *v1.ExtenderTLSConfig `json:"tlsConfig,omitempty"`
+	TLSConfig *ExtenderTLSConfig `json:"tlsConfig,omitempty"`
 	// HTTPTimeout specifies the timeout duration for a call to the extender. Filter timeout fails the scheduling of the pod. Prioritize
 	// timeout is ignored, k8s/other extenders priorities are used to select the node.
 	HTTPTimeout metav1.Duration `json:"httpTimeout,omitempty"`
@@ -298,8 +330,45 @@ type Extender struct {
 	//   will skip checking the resource in predicates.
 	// +optional
 	// +listType=atomic
-	ManagedResources []v1.ExtenderManagedResource `json:"managedResources,omitempty"`
+	ManagedResources []ExtenderManagedResource `json:"managedResources,omitempty"`
 	// Ignorable specifies if the extender is ignorable, i.e. scheduling should not
 	// fail when the extender returns an error or is not reachable.
 	Ignorable bool `json:"ignorable,omitempty"`
+}
+
+// ExtenderManagedResource describes the arguments of extended resources
+// managed by an extender.
+type ExtenderManagedResource struct {
+	// Name is the extended resource name.
+	Name string `json:"name"`
+	// IgnoredByScheduler indicates whether kube-scheduler should ignore this
+	// resource when applying predicates.
+	IgnoredByScheduler bool `json:"ignoredByScheduler,omitempty"`
+}
+
+// ExtenderTLSConfig contains settings to enable TLS with extender
+type ExtenderTLSConfig struct {
+	// Server should be accessed without verifying the TLS certificate. For testing only.
+	Insecure bool `json:"insecure,omitempty"`
+	// ServerName is passed to the server for SNI and is used in the client to check server
+	// certificates against. If ServerName is empty, the hostname used to contact the
+	// server is used.
+	ServerName string `json:"serverName,omitempty"`
+
+	// Server requires TLS client certificate authentication
+	CertFile string `json:"certFile,omitempty"`
+	// Server requires TLS client certificate authentication
+	KeyFile string `json:"keyFile,omitempty"`
+	// Trusted root certificates for server
+	CAFile string `json:"caFile,omitempty"`
+
+	// CertData holds PEM-encoded bytes (typically read from a client certificate file).
+	// CertData takes precedence over CertFile
+	CertData []byte `json:"certData,omitempty"`
+	// KeyData holds PEM-encoded bytes (typically read from a client certificate key file).
+	// KeyData takes precedence over KeyFile
+	KeyData []byte `json:"keyData,omitempty"`
+	// CAData holds PEM-encoded bytes (typically read from a root certificates bundle).
+	// CAData takes precedence over CAFile
+	CAData []byte `json:"caData,omitempty"`
 }
