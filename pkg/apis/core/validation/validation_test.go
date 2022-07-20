@@ -27,7 +27,6 @@ import (
 
 	"github.com/google/go-cmp/cmp"
 	"github.com/stretchr/testify/assert"
-	asserttestify "github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/proto"
 	v1 "k8s.io/api/core/v1"
@@ -676,11 +675,38 @@ func TestValidatePersistentVolumeSourceUpdate(t *testing.T) {
 		Namespace: "default",
 	}
 
+	// shortSecretRef refers to the secretRefs which are validated with IsDNS1035Label
+	shortSecretName := "key-name"
+	shortSecretRef := &core.SecretReference{
+		Name:      shortSecretName,
+		Namespace: "default",
+	}
+
+	//longSecretRef refers to the secretRefs which are validated with IsDNS1123Subdomain
+	longSecretName := "key-name.example.com"
+	longSecretRef := &core.SecretReference{
+		Name:      longSecretName,
+		Namespace: "default",
+	}
+
+	// invalidSecrets missing name, namespace and both
+	inValidSecretRef := &core.SecretReference{
+		Name:      "",
+		Namespace: "",
+	}
+	invalidSecretRefmissingName := &core.SecretReference{
+		Name:      "",
+		Namespace: "default",
+	}
+	invalidSecretRefmissingNamespace := &core.SecretReference{
+		Name:      "invalidnamespace",
+		Namespace: "",
+	}
+
 	scenarios := map[string]struct {
-		isExpectedFailure   bool
-		csiExpansionEnabled bool
-		oldVolume           *core.PersistentVolume
-		newVolume           *core.PersistentVolume
+		isExpectedFailure bool
+		oldVolume         *core.PersistentVolume
+		newVolume         *core.PersistentVolume
 	}{
 		"condition-no-update": {
 			isExpectedFailure: false,
@@ -698,19 +724,137 @@ func TestValidatePersistentVolumeSourceUpdate(t *testing.T) {
 			newVolume:         invalidPvSourceUpdateDeep,
 		},
 		"csi-expansion-enabled-with-pv-secret": {
-			csiExpansionEnabled: true,
-			isExpectedFailure:   false,
-			oldVolume:           validCSIVolume,
-			newVolume:           getCSIVolumeWithSecret(validCSIVolume, expandSecretRef),
+			isExpectedFailure: false,
+			oldVolume:         validCSIVolume,
+			newVolume:         getCSIVolumeWithSecret(validCSIVolume, expandSecretRef, "controllerExpand"),
 		},
 		"csi-expansion-enabled-with-old-pv-secret": {
-			csiExpansionEnabled: true,
-			isExpectedFailure:   true,
-			oldVolume:           getCSIVolumeWithSecret(validCSIVolume, expandSecretRef),
+			isExpectedFailure: true,
+			oldVolume:         getCSIVolumeWithSecret(validCSIVolume, expandSecretRef, "controllerExpand"),
 			newVolume: getCSIVolumeWithSecret(validCSIVolume, &core.SecretReference{
 				Name:      "foo-secret",
 				Namespace: "default",
-			}),
+			}, "controllerExpand"),
+		},
+		"csi-expansion-enabled-with-shortSecretRef": {
+			isExpectedFailure: false,
+			oldVolume:         validCSIVolume,
+			newVolume:         getCSIVolumeWithSecret(validCSIVolume, shortSecretRef, "controllerExpand"),
+		},
+		"csi-expansion-enabled-with-longSecretRef": {
+			isExpectedFailure: true,
+			oldVolume:         validCSIVolume,
+			newVolume:         getCSIVolumeWithSecret(validCSIVolume, longSecretRef, "controllerExpand"),
+		},
+		"csi-expansion-enabled-from-shortSecretRef-to-shortSecretRef": {
+			isExpectedFailure: false,
+			oldVolume:         getCSIVolumeWithSecret(validCSIVolume, shortSecretRef, "controllerExpand"),
+			newVolume:         getCSIVolumeWithSecret(validCSIVolume, shortSecretRef, "controllerExpand"),
+		},
+		"csi-expansion-enabled-from-shortSecretRef-to-longSecretRef": {
+			isExpectedFailure: true,
+			oldVolume:         getCSIVolumeWithSecret(validCSIVolume, shortSecretRef, "controllerExpand"),
+			newVolume:         getCSIVolumeWithSecret(validCSIVolume, longSecretRef, "controllerExpand"),
+		},
+		"csi-expansion-enabled-from-longSecretRef-to-longSecretRef": {
+			isExpectedFailure: false,
+			oldVolume:         getCSIVolumeWithSecret(validCSIVolume, longSecretRef, "controllerExpand"),
+			newVolume:         getCSIVolumeWithSecret(validCSIVolume, longSecretRef, "controllerExpand"),
+		},
+		"csi-cntrlpublish-enabled-with-shortSecretRef": {
+			isExpectedFailure: true, // updating secretRef will fail as the object is immutable eventhough the secretRef is valid
+			oldVolume:         validCSIVolume,
+			newVolume:         getCSIVolumeWithSecret(validCSIVolume, shortSecretRef, "controllerPublish"),
+		},
+		"csi-cntrlpublish-enabled-with-longSecretRef": {
+			isExpectedFailure: true, // updating secretRef will fail as the object is immutable eventhough the secretRef is valid
+			oldVolume:         validCSIVolume,
+			newVolume:         getCSIVolumeWithSecret(validCSIVolume, longSecretRef, "controllerPublish"),
+		},
+		"csi-cntrlpublish-enabled-from-shortSecretRef-to-shortSecretRef": {
+			isExpectedFailure: false,
+			oldVolume:         getCSIVolumeWithSecret(validCSIVolume, shortSecretRef, "controllerPublish"),
+			newVolume:         getCSIVolumeWithSecret(validCSIVolume, shortSecretRef, "controllerPublish"),
+		},
+		"csi-cntrlpublish-enabled-from-shortSecretRef-to-longSecretRef": {
+			isExpectedFailure: true,
+			oldVolume:         getCSIVolumeWithSecret(validCSIVolume, shortSecretRef, "controllerPublish"),
+			newVolume:         getCSIVolumeWithSecret(validCSIVolume, longSecretRef, "controllerPublish"),
+		},
+		"csi-cntrlpublish-enabled-from-longSecretRef-to-longSecretRef": {
+			isExpectedFailure: false,
+			oldVolume:         getCSIVolumeWithSecret(validCSIVolume, longSecretRef, "controllerPublish"),
+			newVolume:         getCSIVolumeWithSecret(validCSIVolume, longSecretRef, "controllerPublish"),
+		},
+		"csi-nodepublish-enabled-with-shortSecretRef": {
+			isExpectedFailure: true, // updating secretRef will fail as the object is immutable eventhough the secretRef is valid
+			oldVolume:         validCSIVolume,
+			newVolume:         getCSIVolumeWithSecret(validCSIVolume, shortSecretRef, "nodePublish"),
+		},
+		"csi-nodepublish-enabled-with-longSecretRef": {
+			isExpectedFailure: true, // updating secretRef will fail as the object is immutable eventhough the secretRef is valid
+			oldVolume:         validCSIVolume,
+			newVolume:         getCSIVolumeWithSecret(validCSIVolume, longSecretRef, "nodePublish"),
+		},
+		"csi-nodepublish-enabled-from-shortSecretRef-to-shortSecretRef": {
+			isExpectedFailure: false,
+			oldVolume:         getCSIVolumeWithSecret(validCSIVolume, shortSecretRef, "nodePublish"),
+			newVolume:         getCSIVolumeWithSecret(validCSIVolume, shortSecretRef, "nodePublish"),
+		},
+		"csi-nodepublish-enabled-from-shortSecretRef-to-longSecretRef": {
+			isExpectedFailure: true,
+			oldVolume:         getCSIVolumeWithSecret(validCSIVolume, shortSecretRef, "nodePublish"),
+			newVolume:         getCSIVolumeWithSecret(validCSIVolume, longSecretRef, "nodePublish"),
+		},
+		"csi-nodepublish-enabled-from-longSecretRef-to-longSecretRef": {
+			isExpectedFailure: false,
+			oldVolume:         getCSIVolumeWithSecret(validCSIVolume, longSecretRef, "nodePublish"),
+			newVolume:         getCSIVolumeWithSecret(validCSIVolume, longSecretRef, "nodePublish"),
+		},
+		"csi-nodestage-enabled-with-shortSecretRef": {
+			isExpectedFailure: true, // updating secretRef will fail as the object is immutable eventhough the secretRef is valid
+			oldVolume:         validCSIVolume,
+			newVolume:         getCSIVolumeWithSecret(validCSIVolume, shortSecretRef, "nodeStage"),
+		},
+		"csi-nodestage-enabled-with-longSecretRef": {
+			isExpectedFailure: true, // updating secretRef will fail as the object is immutable eventhough the secretRef is valid
+			oldVolume:         validCSIVolume,
+			newVolume:         getCSIVolumeWithSecret(validCSIVolume, longSecretRef, "nodeStage"),
+		},
+		"csi-nodestage-enabled-from-shortSecretRef-to-longSecretRef": {
+			isExpectedFailure: true,
+			oldVolume:         getCSIVolumeWithSecret(validCSIVolume, shortSecretRef, "nodeStage"),
+			newVolume:         getCSIVolumeWithSecret(validCSIVolume, longSecretRef, "nodeStage"),
+		},
+
+		// At present, there is no validation exist for nodeStage secretRef in
+		// ValidatePersistentVolumeSpec->validateCSIPersistentVolumeSource, due to that, below
+		// checks/validations pass!
+
+		"csi-nodestage-enabled-from-invalidSecretRef-to-invalidSecretRef": {
+			isExpectedFailure: false,
+			oldVolume:         getCSIVolumeWithSecret(validCSIVolume, inValidSecretRef, "nodeStage"),
+			newVolume:         getCSIVolumeWithSecret(validCSIVolume, inValidSecretRef, "nodeStage"),
+		},
+		"csi-nodestage-enabled-from-invalidSecretRefmissingname-to-invalidSecretRefmissingname": {
+			isExpectedFailure: false,
+			oldVolume:         getCSIVolumeWithSecret(validCSIVolume, invalidSecretRefmissingName, "nodeStage"),
+			newVolume:         getCSIVolumeWithSecret(validCSIVolume, invalidSecretRefmissingName, "nodeStage"),
+		},
+		"csi-nodestage-enabled-from-invalidSecretRefmissingnamespace-to-invalidSecretRefmissingnamespace": {
+			isExpectedFailure: false,
+			oldVolume:         getCSIVolumeWithSecret(validCSIVolume, invalidSecretRefmissingNamespace, "nodeStage"),
+			newVolume:         getCSIVolumeWithSecret(validCSIVolume, invalidSecretRefmissingNamespace, "nodeStage"),
+		},
+		"csi-nodestage-enabled-from-shortSecretRef-to-shortSecretRef": {
+			isExpectedFailure: false,
+			oldVolume:         getCSIVolumeWithSecret(validCSIVolume, shortSecretRef, "nodeStage"),
+			newVolume:         getCSIVolumeWithSecret(validCSIVolume, shortSecretRef, "nodeStage"),
+		},
+		"csi-nodestage-enabled-from-longSecretRef-to-longSecretRef": {
+			isExpectedFailure: false,
+			oldVolume:         getCSIVolumeWithSecret(validCSIVolume, longSecretRef, "nodeStage"),
+			newVolume:         getCSIVolumeWithSecret(validCSIVolume, longSecretRef, "nodeStage"),
 		},
 	}
 	for name, scenario := range scenarios {
@@ -780,6 +924,23 @@ func TestValidationOptionsForPersistentVolume(t *testing.T) {
 	}
 }
 
+func getCSIVolumeWithSecret(pv *core.PersistentVolume, secret *core.SecretReference, secretfield string) *core.PersistentVolume {
+	pvCopy := pv.DeepCopy()
+	switch secretfield {
+	case "controllerExpand":
+		pvCopy.Spec.CSI.ControllerExpandSecretRef = secret
+	case "controllerPublish":
+		pvCopy.Spec.CSI.ControllerPublishSecretRef = secret
+	case "nodePublish":
+		pvCopy.Spec.CSI.NodePublishSecretRef = secret
+	case "nodeStage":
+		pvCopy.Spec.CSI.NodeStageSecretRef = secret
+	default:
+		panic("unknown string")
+	}
+
+	return pvCopy
+}
 func pvWithAccessModes(accessModes []core.PersistentVolumeAccessMode) *core.PersistentVolume {
 	return &core.PersistentVolume{
 		Spec: core.PersistentVolumeSpec{
@@ -802,14 +963,6 @@ func pvcTemplateWithAccessModes(accessModes []core.PersistentVolumeAccessMode) *
 			AccessModes: accessModes,
 		},
 	}
-}
-
-func getCSIVolumeWithSecret(pv *core.PersistentVolume, secret *core.SecretReference) *core.PersistentVolume {
-	pvCopy := pv.DeepCopy()
-	if secret != nil {
-		pvCopy.Spec.CSI.ControllerExpandSecretRef = secret
-	}
-	return pvCopy
 }
 
 func testLocalVolume(path string, affinity *core.VolumeNodeAffinity) core.PersistentVolumeSpec {
@@ -1198,14 +1351,6 @@ func testValidatePVC(t *testing.T, ephemeral bool) {
 				claim.Finalizers = []string{
 					"example.com/foo",
 				}
-				return claim
-			}(),
-		},
-		"with-cluster-name": {
-			isExpectedFailure: ephemeral,
-			claim: func() *core.PersistentVolumeClaim {
-				claim := testVolumeClaim(goodName, goodNS, goodClaimSpec)
-				claim.ClusterName = "foo"
 				return claim
 			}(),
 		},
@@ -1953,215 +2098,173 @@ func TestValidatePersistentVolumeClaimUpdate(t *testing.T) {
 		isExpectedFailure          bool
 		oldClaim                   *core.PersistentVolumeClaim
 		newClaim                   *core.PersistentVolumeClaim
-		enableResize               bool
 		enableRecoverFromExpansion bool
 	}{
 		"valid-update-volumeName-only": {
 			isExpectedFailure: false,
 			oldClaim:          validClaim,
 			newClaim:          validUpdateClaim,
-			enableResize:      false,
 		},
 		"valid-no-op-update": {
 			isExpectedFailure: false,
 			oldClaim:          validUpdateClaim,
 			newClaim:          validUpdateClaim,
-			enableResize:      false,
 		},
 		"invalid-update-change-resources-on-bound-claim": {
 			isExpectedFailure: true,
 			oldClaim:          validUpdateClaim,
 			newClaim:          invalidUpdateClaimResources,
-			enableResize:      false,
 		},
 		"invalid-update-change-access-modes-on-bound-claim": {
 			isExpectedFailure: true,
 			oldClaim:          validUpdateClaim,
 			newClaim:          invalidUpdateClaimAccessModes,
-			enableResize:      false,
 		},
 		"valid-update-volume-mode-block-to-block": {
 			isExpectedFailure: false,
 			oldClaim:          validClaimVolumeModeBlock,
 			newClaim:          validClaimVolumeModeBlock,
-			enableResize:      false,
 		},
 		"valid-update-volume-mode-file-to-file": {
 			isExpectedFailure: false,
 			oldClaim:          validClaimVolumeModeFile,
 			newClaim:          validClaimVolumeModeFile,
-			enableResize:      false,
 		},
 		"invalid-update-volume-mode-to-block": {
 			isExpectedFailure: true,
 			oldClaim:          validClaimVolumeModeFile,
 			newClaim:          validClaimVolumeModeBlock,
-			enableResize:      false,
 		},
 		"invalid-update-volume-mode-to-file": {
 			isExpectedFailure: true,
 			oldClaim:          validClaimVolumeModeBlock,
 			newClaim:          validClaimVolumeModeFile,
-			enableResize:      false,
 		},
 		"invalid-update-volume-mode-nil-to-file": {
 			isExpectedFailure: true,
 			oldClaim:          invalidClaimVolumeModeNil,
 			newClaim:          validClaimVolumeModeFile,
-			enableResize:      false,
 		},
 		"invalid-update-volume-mode-nil-to-block": {
 			isExpectedFailure: true,
 			oldClaim:          invalidClaimVolumeModeNil,
 			newClaim:          validClaimVolumeModeBlock,
-			enableResize:      false,
 		},
 		"invalid-update-volume-mode-block-to-nil": {
 			isExpectedFailure: true,
 			oldClaim:          validClaimVolumeModeBlock,
 			newClaim:          invalidClaimVolumeModeNil,
-			enableResize:      false,
 		},
 		"invalid-update-volume-mode-file-to-nil": {
 			isExpectedFailure: true,
 			oldClaim:          validClaimVolumeModeFile,
 			newClaim:          invalidClaimVolumeModeNil,
-			enableResize:      false,
 		},
 		"invalid-update-volume-mode-empty-to-mode": {
 			isExpectedFailure: true,
 			oldClaim:          validClaim,
 			newClaim:          validClaimVolumeModeBlock,
-			enableResize:      false,
 		},
 		"invalid-update-volume-mode-mode-to-empty": {
 			isExpectedFailure: true,
 			oldClaim:          validClaimVolumeModeBlock,
 			newClaim:          validClaim,
-			enableResize:      false,
 		},
 		"invalid-update-change-storage-class-annotation-after-creation": {
 			isExpectedFailure: true,
 			oldClaim:          validClaimStorageClass,
 			newClaim:          invalidUpdateClaimStorageClass,
-			enableResize:      false,
 		},
 		"valid-update-mutable-annotation": {
 			isExpectedFailure: false,
 			oldClaim:          validClaimAnnotation,
 			newClaim:          validUpdateClaimMutableAnnotation,
-			enableResize:      false,
 		},
 		"valid-update-add-annotation": {
 			isExpectedFailure: false,
 			oldClaim:          validClaim,
 			newClaim:          validAddClaimAnnotation,
-			enableResize:      false,
 		},
 		"valid-size-update-resize-disabled": {
-			isExpectedFailure: true,
-			oldClaim:          validClaim,
-			newClaim:          validSizeUpdate,
-			enableResize:      false,
+			oldClaim: validClaim,
+			newClaim: validSizeUpdate,
 		},
 		"valid-size-update-resize-enabled": {
 			isExpectedFailure: false,
 			oldClaim:          validClaim,
 			newClaim:          validSizeUpdate,
-			enableResize:      true,
 		},
 		"invalid-size-update-resize-enabled": {
 			isExpectedFailure: true,
 			oldClaim:          validClaim,
 			newClaim:          invalidSizeUpdate,
-			enableResize:      true,
 		},
 		"unbound-size-update-resize-enabled": {
 			isExpectedFailure: true,
 			oldClaim:          validClaim,
 			newClaim:          unboundSizeUpdate,
-			enableResize:      true,
 		},
 		"valid-upgrade-storage-class-annotation-to-spec": {
 			isExpectedFailure: false,
 			oldClaim:          validClaimStorageClass,
 			newClaim:          validClaimStorageClassInSpec,
-			enableResize:      false,
 		},
 		"invalid-upgrade-storage-class-annotation-to-spec": {
 			isExpectedFailure: true,
 			oldClaim:          validClaimStorageClass,
 			newClaim:          invalidClaimStorageClassInSpec,
-			enableResize:      false,
 		},
 		"valid-upgrade-storage-class-annotation-to-annotation-and-spec": {
 			isExpectedFailure: false,
 			oldClaim:          validClaimStorageClass,
 			newClaim:          validClaimStorageClassInAnnotationAndSpec,
-			enableResize:      false,
 		},
 		"invalid-upgrade-storage-class-annotation-to-annotation-and-spec": {
 			isExpectedFailure: true,
 			oldClaim:          validClaimStorageClass,
 			newClaim:          invalidClaimStorageClassInAnnotationAndSpec,
-			enableResize:      false,
 		},
 		"invalid-upgrade-storage-class-in-spec": {
 			isExpectedFailure: true,
 			oldClaim:          validClaimStorageClassInSpec,
 			newClaim:          invalidClaimStorageClassInSpec,
-			enableResize:      false,
 		},
 		"invalid-downgrade-storage-class-spec-to-annotation": {
 			isExpectedFailure: true,
 			oldClaim:          validClaimStorageClassInSpec,
 			newClaim:          validClaimStorageClass,
-			enableResize:      false,
 		},
 		"valid-update-rwop-used-and-rwop-feature-disabled": {
 			isExpectedFailure: false,
 			oldClaim:          validClaimRWOPAccessMode,
 			newClaim:          validClaimRWOPAccessModeAddAnnotation,
-			enableResize:      false,
 		},
 		"valid-expand-shrink-resize-enabled": {
 			oldClaim:                   validClaimShrinkInitial,
 			newClaim:                   validClaimShrink,
-			enableResize:               true,
 			enableRecoverFromExpansion: true,
 		},
 		"invalid-expand-shrink-resize-enabled": {
 			oldClaim:                   validClaimShrinkInitial,
 			newClaim:                   invalidClaimShrink,
-			enableResize:               true,
 			enableRecoverFromExpansion: true,
 			isExpectedFailure:          true,
 		},
 		"invalid-expand-shrink-to-status-resize-enabled": {
 			oldClaim:                   validClaimShrinkInitial,
 			newClaim:                   invalidShrinkToStatus,
-			enableResize:               true,
 			enableRecoverFromExpansion: true,
 			isExpectedFailure:          true,
 		},
 		"invalid-expand-shrink-recover-disabled": {
 			oldClaim:                   validClaimShrinkInitial,
 			newClaim:                   validClaimShrink,
-			enableResize:               true,
 			enableRecoverFromExpansion: false,
-			isExpectedFailure:          true,
-		},
-		"invalid-expand-shrink-resize-disabled": {
-			oldClaim:                   validClaimShrinkInitial,
-			newClaim:                   validClaimShrink,
-			enableResize:               false,
-			enableRecoverFromExpansion: true,
 			isExpectedFailure:          true,
 		},
 		"unbound-size-shrink-resize-enabled": {
 			oldClaim:                   validClaimShrinkInitial,
 			newClaim:                   unboundShrink,
-			enableResize:               true,
 			enableRecoverFromExpansion: true,
 			isExpectedFailure:          true,
 		},
@@ -2169,7 +2272,6 @@ func TestValidatePersistentVolumeClaimUpdate(t *testing.T) {
 
 	for name, scenario := range scenarios {
 		t.Run(name, func(t *testing.T) {
-			defer featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.ExpandPersistentVolumes, scenario.enableResize)()
 			defer featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.RecoverVolumeExpansionFailure, scenario.enableRecoverFromExpansion)()
 			scenario.oldClaim.ResourceVersion = "1"
 			scenario.newClaim.ResourceVersion = "1"
@@ -2196,7 +2298,6 @@ func TestValidationOptionsForPersistentVolumeClaim(t *testing.T) {
 			enableReadWriteOncePod: true,
 			expectValidationOpts: PersistentVolumeClaimSpecValidationOptions{
 				AllowReadWriteOncePod:             true,
-				EnableExpansion:                   true,
 				EnableRecoverFromExpansionFailure: false,
 			},
 		},
@@ -2205,7 +2306,6 @@ func TestValidationOptionsForPersistentVolumeClaim(t *testing.T) {
 			enableReadWriteOncePod: true,
 			expectValidationOpts: PersistentVolumeClaimSpecValidationOptions{
 				AllowReadWriteOncePod:             true,
-				EnableExpansion:                   true,
 				EnableRecoverFromExpansionFailure: false,
 			},
 		},
@@ -2214,7 +2314,6 @@ func TestValidationOptionsForPersistentVolumeClaim(t *testing.T) {
 			enableReadWriteOncePod: false,
 			expectValidationOpts: PersistentVolumeClaimSpecValidationOptions{
 				AllowReadWriteOncePod:             false,
-				EnableExpansion:                   true,
 				EnableRecoverFromExpansionFailure: false,
 			},
 		},
@@ -2223,7 +2322,6 @@ func TestValidationOptionsForPersistentVolumeClaim(t *testing.T) {
 			enableReadWriteOncePod: true,
 			expectValidationOpts: PersistentVolumeClaimSpecValidationOptions{
 				AllowReadWriteOncePod:             true,
-				EnableExpansion:                   true,
 				EnableRecoverFromExpansionFailure: false,
 			},
 		},
@@ -2232,7 +2330,6 @@ func TestValidationOptionsForPersistentVolumeClaim(t *testing.T) {
 			enableReadWriteOncePod: false,
 			expectValidationOpts: PersistentVolumeClaimSpecValidationOptions{
 				AllowReadWriteOncePod:             true,
-				EnableExpansion:                   true,
 				EnableRecoverFromExpansionFailure: false,
 			},
 		},
@@ -2534,9 +2631,123 @@ func TestValidateGlusterfsPersistentVolumeSource(t *testing.T) {
 func TestValidateCSIVolumeSource(t *testing.T) {
 	testCases := []struct {
 		name     string
-		csi      *core.CSIPersistentVolumeSource
+		csi      *core.CSIVolumeSource
 		errtype  field.ErrorType
 		errfield string
+	}{
+		{
+			name: "all required fields ok",
+			csi:  &core.CSIVolumeSource{Driver: "test-driver"},
+		},
+		{
+			name:     "missing driver name",
+			csi:      &core.CSIVolumeSource{Driver: ""},
+			errtype:  field.ErrorTypeRequired,
+			errfield: "driver",
+		},
+		{
+			name: "driver name: ok no punctuations",
+			csi:  &core.CSIVolumeSource{Driver: "comgooglestoragecsigcepd"},
+		},
+		{
+			name: "driver name: ok dot only",
+			csi:  &core.CSIVolumeSource{Driver: "io.kubernetes.storage.csi.flex"},
+		},
+		{
+			name: "driver name: ok dash only",
+			csi:  &core.CSIVolumeSource{Driver: "io-kubernetes-storage-csi-flex"},
+		},
+		{
+			name:     "driver name: invalid underscore",
+			csi:      &core.CSIVolumeSource{Driver: "io_kubernetes_storage_csi_flex"},
+			errtype:  field.ErrorTypeInvalid,
+			errfield: "driver",
+		},
+		{
+			name:     "driver name: invalid dot underscores",
+			csi:      &core.CSIVolumeSource{Driver: "io.kubernetes.storage_csi.flex"},
+			errtype:  field.ErrorTypeInvalid,
+			errfield: "driver",
+		},
+		{
+			name: "driver name: ok beginning with number",
+			csi:  &core.CSIVolumeSource{Driver: "2io.kubernetes.storage-csi.flex"},
+		},
+		{
+			name: "driver name: ok ending with number",
+			csi:  &core.CSIVolumeSource{Driver: "io.kubernetes.storage-csi.flex2"},
+		},
+		{
+			name:     "driver name: invalid dot dash underscores",
+			csi:      &core.CSIVolumeSource{Driver: "io.kubernetes-storage.csi_flex"},
+			errtype:  field.ErrorTypeInvalid,
+			errfield: "driver",
+		},
+
+		{
+			name: "driver name: ok length 1",
+			csi:  &core.CSIVolumeSource{Driver: "a"},
+		},
+		{
+			name:     "driver name: invalid length > 63",
+			csi:      &core.CSIVolumeSource{Driver: strings.Repeat("g", 65)},
+			errtype:  field.ErrorTypeTooLong,
+			errfield: "driver",
+		},
+		{
+			name:     "driver name: invalid start char",
+			csi:      &core.CSIVolumeSource{Driver: "_comgooglestoragecsigcepd"},
+			errtype:  field.ErrorTypeInvalid,
+			errfield: "driver",
+		},
+		{
+			name:     "driver name: invalid end char",
+			csi:      &core.CSIVolumeSource{Driver: "comgooglestoragecsigcepd/"},
+			errtype:  field.ErrorTypeInvalid,
+			errfield: "driver",
+		},
+		{
+			name:     "driver name: invalid separators",
+			csi:      &core.CSIVolumeSource{Driver: "com/google/storage/csi~gcepd"},
+			errtype:  field.ErrorTypeInvalid,
+			errfield: "driver",
+		},
+		{
+			name: "valid nodePublishSecretRef",
+			csi:  &core.CSIVolumeSource{Driver: "com.google.gcepd", NodePublishSecretRef: &core.LocalObjectReference{Name: "foobar"}},
+		},
+		{
+			name:     "nodePublishSecretRef: invalid name missing",
+			csi:      &core.CSIVolumeSource{Driver: "com.google.gcepd", NodePublishSecretRef: &core.LocalObjectReference{Name: ""}},
+			errtype:  field.ErrorTypeRequired,
+			errfield: "nodePublishSecretRef.name",
+		},
+	}
+
+	for i, tc := range testCases {
+		errs := validateCSIVolumeSource(tc.csi, field.NewPath("field"))
+
+		if len(errs) > 0 && tc.errtype == "" {
+			t.Errorf("[%d: %q] unexpected error(s): %v", i, tc.name, errs)
+		} else if len(errs) == 0 && tc.errtype != "" {
+			t.Errorf("[%d: %q] expected error type %v", i, tc.name, tc.errtype)
+		} else if len(errs) >= 1 {
+			if errs[0].Type != tc.errtype {
+				t.Errorf("[%d: %q] expected error type %v, got %v", i, tc.name, tc.errtype, errs[0].Type)
+			} else if !strings.HasSuffix(errs[0].Field, "."+tc.errfield) {
+				t.Errorf("[%d: %q] expected error on field %q, got %q", i, tc.name, tc.errfield, errs[0].Field)
+			}
+		}
+	}
+}
+
+func TestValidateCSIPersistentVolumeSource(t *testing.T) {
+	testCases := []struct {
+		name                        string
+		csi                         *core.CSIPersistentVolumeSource
+		errtype                     field.ErrorType
+		errfield                    string
+		allowDNSSubDomainSecretName bool
 	}{
 		{
 			name: "all required fields ok",
@@ -2583,7 +2794,7 @@ func TestValidateCSIVolumeSource(t *testing.T) {
 			errfield: "driver",
 		},
 		{
-			name: "driver name: ok beginnin with number",
+			name: "driver name: ok beginning with number",
 			csi:  &core.CSIPersistentVolumeSource{Driver: "2io.kubernetes.storage-csi.flex", VolumeHandle: "test-123"},
 		},
 		{
@@ -2608,7 +2819,7 @@ func TestValidateCSIVolumeSource(t *testing.T) {
 		},
 		{
 			name:     "driver name: invalid length > 63",
-			csi:      &core.CSIPersistentVolumeSource{Driver: "comgooglestoragecsigcepdcomgooglestoragecsigcepdcomgooglestoragecsigcepdcomgooglestoragecsigcepd", VolumeHandle: "test-123"},
+			csi:      &core.CSIPersistentVolumeSource{Driver: strings.Repeat("g", 65), VolumeHandle: "test-123"},
 			errtype:  field.ErrorTypeTooLong,
 			errfield: "driver",
 		},
@@ -2646,10 +2857,136 @@ func TestValidateCSIVolumeSource(t *testing.T) {
 			name: "valid controllerExpandSecretRef",
 			csi:  &core.CSIPersistentVolumeSource{Driver: "com.google.gcepd", VolumeHandle: "foobar", ControllerExpandSecretRef: &core.SecretReference{Name: "foobar", Namespace: "default"}},
 		},
+		{
+			name:     "controllerPublishSecretRef: invalid name missing",
+			csi:      &core.CSIPersistentVolumeSource{Driver: "com.google.gcepd", VolumeHandle: "foobar", ControllerPublishSecretRef: &core.SecretReference{Namespace: "default"}},
+			errtype:  field.ErrorTypeRequired,
+			errfield: "controllerPublishSecretRef.name",
+		},
+		{
+			name:     "controllerPublishSecretRef: invalid namespace missing",
+			csi:      &core.CSIPersistentVolumeSource{Driver: "com.google.gcepd", VolumeHandle: "foobar", ControllerPublishSecretRef: &core.SecretReference{Name: "foobar"}},
+			errtype:  field.ErrorTypeRequired,
+			errfield: "controllerPublishSecretRef.namespace",
+		},
+		{
+			name: "valid controllerPublishSecretRef",
+			csi:  &core.CSIPersistentVolumeSource{Driver: "com.google.gcepd", VolumeHandle: "foobar", ControllerPublishSecretRef: &core.SecretReference{Name: "foobar", Namespace: "default"}},
+		},
+		{
+			name: "valid nodePublishSecretRef",
+			csi:  &core.CSIPersistentVolumeSource{Driver: "com.google.gcepd", VolumeHandle: "foobar", NodePublishSecretRef: &core.SecretReference{Name: "foobar", Namespace: "default"}},
+		},
+		{
+			name:     "nodePublishSecretRef: invalid name missing",
+			csi:      &core.CSIPersistentVolumeSource{Driver: "com.google.gcepd", VolumeHandle: "foobar", NodePublishSecretRef: &core.SecretReference{Namespace: "foobar"}},
+			errtype:  field.ErrorTypeRequired,
+			errfield: "nodePublishSecretRef.name",
+		},
+		{
+			name:     "nodePublishSecretRef: invalid namespace missing",
+			csi:      &core.CSIPersistentVolumeSource{Driver: "com.google.gcepd", VolumeHandle: "foobar", NodePublishSecretRef: &core.SecretReference{Name: "foobar"}},
+			errtype:  field.ErrorTypeRequired,
+			errfield: "nodePublishSecretRef.namespace",
+		},
+		{
+			name:     "nodeExpandSecretRef: invalid name missing",
+			csi:      &core.CSIPersistentVolumeSource{Driver: "com.google.gcepd", VolumeHandle: "foobar", NodeExpandSecretRef: &core.SecretReference{Namespace: "default"}},
+			errtype:  field.ErrorTypeRequired,
+			errfield: "nodeExpandSecretRef.name",
+		},
+		{
+			name:     "nodeExpandSecretRef: invalid namespace missing",
+			csi:      &core.CSIPersistentVolumeSource{Driver: "com.google.gcepd", VolumeHandle: "foobar", NodeExpandSecretRef: &core.SecretReference{Name: "foobar"}},
+			errtype:  field.ErrorTypeRequired,
+			errfield: "nodeExpandSecretRef.namespace",
+		},
+		{
+			name: "valid nodeExpandSecretRef",
+			csi:  &core.CSIPersistentVolumeSource{Driver: "com.google.gcepd", VolumeHandle: "foobar", NodeExpandSecretRef: &core.SecretReference{Name: "foobar", Namespace: "default"}},
+		},
+		{
+			name: "Invalid nodePublishSecretRef",
+			csi:  &core.CSIPersistentVolumeSource{Driver: "com.google.gcepd", VolumeHandle: "foobar", NodePublishSecretRef: &core.SecretReference{Name: "foobar", Namespace: "default"}},
+		},
+
+		// tests with allowDNSSubDomainSecretName flag on/off
+		{
+			name:                        "valid nodeExpandSecretRef with allow flag off",
+			csi:                         &core.CSIPersistentVolumeSource{Driver: "com.google.gcepd", VolumeHandle: "foobar", NodeExpandSecretRef: &core.SecretReference{Name: strings.Repeat("g", 63), Namespace: "default"}},
+			allowDNSSubDomainSecretName: false,
+		},
+		{
+			name:                        "Invalid nodeExpandSecretRef with allow flag off",
+			csi:                         &core.CSIPersistentVolumeSource{Driver: "com.google.gcepd", VolumeHandle: "foobar", NodeExpandSecretRef: &core.SecretReference{Name: strings.Repeat("g", 65), Namespace: "default"}},
+			allowDNSSubDomainSecretName: false,
+			errtype:                     field.ErrorTypeInvalid,
+			errfield:                    "nodeExpandSecretRef.name",
+		},
+		{
+			name:                        "valid nodeExpandSecretRef with allow flag on",
+			csi:                         &core.CSIPersistentVolumeSource{Driver: "com.google.gcepd", VolumeHandle: "foobar", NodeExpandSecretRef: &core.SecretReference{Name: strings.Repeat("g", 65), Namespace: "default"}},
+			allowDNSSubDomainSecretName: true,
+		},
+		{
+			name:                        "Invalid nodeExpandSecretRef with allow flag on",
+			csi:                         &core.CSIPersistentVolumeSource{Driver: "com.google.gcepd", VolumeHandle: "foobar", NodeExpandSecretRef: &core.SecretReference{Name: strings.Repeat("g", 255), Namespace: "default"}},
+			allowDNSSubDomainSecretName: true,
+			errtype:                     field.ErrorTypeInvalid,
+			errfield:                    "nodeExpandSecretRef.name",
+		},
+		{
+			name:                        "valid nodePublishSecretRef with allow flag off",
+			csi:                         &core.CSIPersistentVolumeSource{Driver: "com.google.gcepd", VolumeHandle: "foobar", NodePublishSecretRef: &core.SecretReference{Name: strings.Repeat("g", 63), Namespace: "default"}},
+			allowDNSSubDomainSecretName: false,
+		},
+		{
+			name:                        "Invalid nodePublishSecretRef with allow flag off",
+			csi:                         &core.CSIPersistentVolumeSource{Driver: "com.google.gcepd", VolumeHandle: "foobar", NodePublishSecretRef: &core.SecretReference{Name: strings.Repeat("g", 65), Namespace: "default"}},
+			allowDNSSubDomainSecretName: false,
+			errtype:                     field.ErrorTypeInvalid,
+			errfield:                    "nodePublishSecretRef.name",
+		},
+		{
+			name:                        "valid nodePublishSecretRef with allow flag on",
+			csi:                         &core.CSIPersistentVolumeSource{Driver: "com.google.gcepd", VolumeHandle: "foobar", NodePublishSecretRef: &core.SecretReference{Name: strings.Repeat("g", 65), Namespace: "default"}},
+			allowDNSSubDomainSecretName: true,
+		},
+		{
+			name:                        "Invalid nodePublishSecretRef with allow flag on",
+			csi:                         &core.CSIPersistentVolumeSource{Driver: "com.google.gcepd", VolumeHandle: "foobar", NodePublishSecretRef: &core.SecretReference{Name: strings.Repeat("g", 255), Namespace: "default"}},
+			allowDNSSubDomainSecretName: true,
+			errtype:                     field.ErrorTypeInvalid,
+			errfield:                    "nodePublishSecretRef.name",
+		},
+		{
+			name:                        "valid ControllerExpandSecretRef with allow flag off",
+			csi:                         &core.CSIPersistentVolumeSource{Driver: "com.google.gcepd", VolumeHandle: "foobar", ControllerExpandSecretRef: &core.SecretReference{Name: strings.Repeat("g", 63), Namespace: "default"}},
+			allowDNSSubDomainSecretName: false,
+		},
+		{
+			name:                        "Invalid ControllerExpandSecretRef with allow flag off",
+			csi:                         &core.CSIPersistentVolumeSource{Driver: "com.google.gcepd", VolumeHandle: "foobar", ControllerExpandSecretRef: &core.SecretReference{Name: strings.Repeat("g", 65), Namespace: "default"}},
+			allowDNSSubDomainSecretName: false,
+			errtype:                     field.ErrorTypeInvalid,
+			errfield:                    "controllerExpandSecretRef.name",
+		},
+		{
+			name:                        "valid ControllerExpandSecretRef with allow flag on",
+			csi:                         &core.CSIPersistentVolumeSource{Driver: "com.google.gcepd", VolumeHandle: "foobar", ControllerExpandSecretRef: &core.SecretReference{Name: strings.Repeat("g", 65), Namespace: "default"}},
+			allowDNSSubDomainSecretName: true,
+		},
+		{
+			name:                        "Invalid ControllerExpandSecretRef with allow flag on",
+			csi:                         &core.CSIPersistentVolumeSource{Driver: "com.google.gcepd", VolumeHandle: "foobar", ControllerExpandSecretRef: &core.SecretReference{Name: strings.Repeat("g", 255), Namespace: "default"}},
+			allowDNSSubDomainSecretName: true,
+			errtype:                     field.ErrorTypeInvalid,
+			errfield:                    "controllerExpandSecretRef.name",
+		},
 	}
 
 	for i, tc := range testCases {
-		errs := validateCSIPersistentVolumeSource(tc.csi, field.NewPath("field"))
+		errs := validateCSIPersistentVolumeSource(tc.csi, tc.allowDNSSubDomainSecretName, field.NewPath("field"))
 
 		if len(errs) > 0 && tc.errtype == "" {
 			t.Errorf("[%d: %q] unexpected error(s): %v", i, tc.name, errs)
@@ -6591,40 +6928,24 @@ func TestValidateWindowsPodSecurityContext(t *testing.T) {
 	validWindowsSC := &core.PodSecurityContext{WindowsOptions: &core.WindowsSecurityContextOptions{RunAsUserName: utilpointer.String("dummy")}}
 	invalidWindowsSC := &core.PodSecurityContext{SELinuxOptions: &core.SELinuxOptions{Role: "dummyRole"}}
 	cases := map[string]struct {
-		podSec         *core.PodSpec
-		expectErr      bool
-		errorType      field.ErrorType
-		errorDetail    string
-		featureEnabled bool
+		podSec      *core.PodSpec
+		expectErr   bool
+		errorType   field.ErrorType
+		errorDetail string
 	}{
 		"valid SC, windows, no error": {
-			podSec:         &core.PodSpec{SecurityContext: validWindowsSC},
-			expectErr:      false,
-			featureEnabled: true,
+			podSec:    &core.PodSpec{SecurityContext: validWindowsSC},
+			expectErr: false,
 		},
 		"invalid SC, windows, error": {
-			podSec:         &core.PodSpec{SecurityContext: invalidWindowsSC},
-			errorType:      "FieldValueForbidden",
-			errorDetail:    "cannot be set for a windows pod",
-			expectErr:      true,
-			featureEnabled: true,
-		},
-		"valid SC, windows, no error, no IdentifyPodOS featuregate": {
-			podSec:         &core.PodSpec{SecurityContext: validWindowsSC},
-			expectErr:      false,
-			featureEnabled: false,
-		},
-		"invalid SC, windows, error, no IdentifyPodOS featuregate": {
-			podSec:         &core.PodSpec{SecurityContext: invalidWindowsSC},
-			errorType:      "FieldValueForbidden",
-			errorDetail:    "cannot be set for a windows pod",
-			expectErr:      true,
-			featureEnabled: false,
+			podSec:      &core.PodSpec{SecurityContext: invalidWindowsSC},
+			errorType:   "FieldValueForbidden",
+			errorDetail: "cannot be set for a windows pod",
+			expectErr:   true,
 		},
 	}
 	for k, v := range cases {
 		t.Run(k, func(t *testing.T) {
-			defer featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.IdentifyPodOS, v.featureEnabled)()
 			errs := validateWindows(v.podSec, field.NewPath("field"))
 			if v.expectErr && len(errs) > 0 {
 				if errs[0].Type != v.errorType || !strings.Contains(errs[0].Detail, v.errorDetail) {
@@ -6656,40 +6977,24 @@ func TestValidateLinuxPodSecurityContext(t *testing.T) {
 	}
 
 	cases := map[string]struct {
-		podSpec        *core.PodSpec
-		expectErr      bool
-		errorType      field.ErrorType
-		errorDetail    string
-		featureEnabled bool
+		podSpec     *core.PodSpec
+		expectErr   bool
+		errorType   field.ErrorType
+		errorDetail string
 	}{
 		"valid SC, linux, no error": {
-			podSpec:        &core.PodSpec{SecurityContext: validLinuxSC},
-			expectErr:      false,
-			featureEnabled: true,
+			podSpec:   &core.PodSpec{SecurityContext: validLinuxSC},
+			expectErr: false,
 		},
 		"invalid SC, linux, error": {
-			podSpec:        &core.PodSpec{SecurityContext: invalidLinuxSC},
-			errorType:      "FieldValueForbidden",
-			errorDetail:    "windows options cannot be set for a linux pod",
-			expectErr:      true,
-			featureEnabled: true,
-		},
-		"valid SC, linux, no error, no IdentifyPodOS featuregate": {
-			podSpec:        &core.PodSpec{SecurityContext: validLinuxSC},
-			expectErr:      false,
-			featureEnabled: false,
-		},
-		"invalid SC, linux, error, no IdentifyPodOS featuregate": {
-			podSpec:        &core.PodSpec{SecurityContext: invalidLinuxSC},
-			errorType:      "FieldValueForbidden",
-			errorDetail:    "windows options cannot be set for a linux pod",
-			expectErr:      true,
-			featureEnabled: false,
+			podSpec:     &core.PodSpec{SecurityContext: invalidLinuxSC},
+			errorType:   "FieldValueForbidden",
+			errorDetail: "windows options cannot be set for a linux pod",
+			expectErr:   true,
 		},
 	}
 	for k, v := range cases {
 		t.Run(k, func(t *testing.T) {
-			defer featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.IdentifyPodOS, v.featureEnabled)()
 			errs := validateLinux(v.podSpec, field.NewPath("field"))
 			if v.expectErr && len(errs) > 0 {
 				if errs[0].Type != v.errorType || !strings.Contains(errs[0].Detail, v.errorDetail) {
@@ -9704,11 +10009,10 @@ func TestValidatePodUpdate(t *testing.T) {
 	)
 
 	tests := []struct {
-		new         core.Pod
-		old         core.Pod
-		err         string
-		test        string
-		enablePodOS bool
+		new  core.Pod
+		old  core.Pod
+		err  string
+		test string
 	}{
 		{new: core.Pod{}, old: core.Pod{}, err: "", test: "nothing"},
 		{
@@ -10532,9 +10836,8 @@ func TestValidatePodUpdate(t *testing.T) {
 					SecurityContext: &core.PodSecurityContext{SELinuxOptions: &core.SELinuxOptions{Role: "dummy"}},
 				},
 			},
-			err:         "Forbidden: pod updates may not change fields other than `spec.containers[*].image`,",
-			test:        "pod OS changing from Linux to Windows, no IdentifyPodOS featuregate set, no validation done",
-			enablePodOS: false,
+			err:  "Forbidden: pod updates may not change fields other than `spec.containers[*].image",
+			test: "pod OS changing from Linux to Windows, IdentifyPodOS featuregate set",
 		},
 		{
 			new: core.Pod{
@@ -10555,32 +10858,8 @@ func TestValidatePodUpdate(t *testing.T) {
 					SecurityContext: &core.PodSecurityContext{SELinuxOptions: &core.SELinuxOptions{Role: "dummy"}},
 				},
 			},
-			err:         "Forbidden: pod updates may not change fields other than `spec.containers[*].image",
-			test:        "pod OS changing from Linux to Windows, IdentifyPodOS featuregate set",
-			enablePodOS: true,
-		},
-		{
-			new: core.Pod{
-				ObjectMeta: metav1.ObjectMeta{
-					Name: "foo",
-				},
-				Spec: core.PodSpec{
-					OS:              &core.PodOS{Name: core.Windows},
-					SecurityContext: &core.PodSecurityContext{SELinuxOptions: &core.SELinuxOptions{Role: "dummy"}},
-				},
-			},
-			old: core.Pod{
-				ObjectMeta: metav1.ObjectMeta{
-					Name: "foo",
-				},
-				Spec: core.PodSpec{
-					OS:              &core.PodOS{Name: core.Linux},
-					SecurityContext: &core.PodSecurityContext{SELinuxOptions: &core.SELinuxOptions{Role: "dummy"}},
-				},
-			},
-			err:         "spec.securityContext.seLinuxOptions: Forbidden",
-			test:        "pod OS changing from Linux to Windows, IdentifyPodOS featuregate set, we'd get SELinux errors as well",
-			enablePodOS: true,
+			err:  "spec.securityContext.seLinuxOptions: Forbidden",
+			test: "pod OS changing from Linux to Windows, IdentifyPodOS featuregate set, we'd get SELinux errors as well",
 		},
 		{
 			new: core.Pod{
@@ -10597,28 +10876,8 @@ func TestValidatePodUpdate(t *testing.T) {
 				},
 				Spec: core.PodSpec{},
 			},
-			err:         "Forbidden: pod updates may not change fields other than `spec.containers[*].image",
-			test:        "invalid PodOS update, IdentifyPodOS featuregate set",
-			enablePodOS: true,
-		},
-		{
-			new: core.Pod{
-				ObjectMeta: metav1.ObjectMeta{
-					Name: "foo",
-				},
-				Spec: core.PodSpec{
-					OS: &core.PodOS{Name: core.Windows},
-				},
-			},
-			old: core.Pod{
-				ObjectMeta: metav1.ObjectMeta{
-					Name: "foo",
-				},
-				Spec: core.PodSpec{},
-			},
-			err:         "Forbidden: pod updates may not change fields other than `spec.containers[*].image",
-			test:        "no pod spec OS to a valid value, no featuregate",
-			enablePodOS: false,
+			err:  "Forbidden: pod updates may not change fields other than `spec.containers[*].image",
+			test: "invalid PodOS update, IdentifyPodOS featuregate set",
 		},
 		{
 			new: core.Pod{
@@ -10667,7 +10926,7 @@ func TestValidatePodUpdate(t *testing.T) {
 			test.old.Spec.RestartPolicy = "Always"
 		}
 
-		errs := ValidatePodUpdate(&test.new, &test.old, PodValidationOptions{AllowOSField: test.enablePodOS})
+		errs := ValidatePodUpdate(&test.new, &test.old, PodValidationOptions{})
 		if test.err == "" {
 			if len(errs) != 0 {
 				t.Errorf("unexpected invalid: %s (%+v)\nA: %+v\nB: %+v", test.test, errs, test.new, test.old)
@@ -17244,61 +17503,34 @@ func TestValidateEndpointsUpdate(t *testing.T) {
 
 func TestValidateWindowsSecurityContext(t *testing.T) {
 	tests := []struct {
-		name           string
-		sc             *core.PodSpec
-		expectError    bool
-		errorMsg       string
-		errorType      field.ErrorType
-		featureEnabled bool
+		name        string
+		sc          *core.PodSpec
+		expectError bool
+		errorMsg    string
+		errorType   field.ErrorType
 	}{
 		{
-			name:           "pod with SELinux Options",
-			sc:             &core.PodSpec{Containers: []core.Container{{SecurityContext: &core.SecurityContext{SELinuxOptions: &core.SELinuxOptions{Role: "dummy"}}}}},
-			expectError:    true,
-			errorMsg:       "cannot be set for a windows pod",
-			errorType:      "FieldValueForbidden",
-			featureEnabled: true,
+			name:        "pod with SELinux Options",
+			sc:          &core.PodSpec{Containers: []core.Container{{SecurityContext: &core.SecurityContext{SELinuxOptions: &core.SELinuxOptions{Role: "dummy"}}}}},
+			expectError: true,
+			errorMsg:    "cannot be set for a windows pod",
+			errorType:   "FieldValueForbidden",
 		},
 		{
-			name:           "pod with SeccompProfile",
-			sc:             &core.PodSpec{Containers: []core.Container{{SecurityContext: &core.SecurityContext{SeccompProfile: &core.SeccompProfile{LocalhostProfile: utilpointer.String("dummy")}}}}},
-			expectError:    true,
-			errorMsg:       "cannot be set for a windows pod",
-			errorType:      "FieldValueForbidden",
-			featureEnabled: true,
+			name:        "pod with SeccompProfile",
+			sc:          &core.PodSpec{Containers: []core.Container{{SecurityContext: &core.SecurityContext{SeccompProfile: &core.SeccompProfile{LocalhostProfile: utilpointer.String("dummy")}}}}},
+			expectError: true,
+			errorMsg:    "cannot be set for a windows pod",
+			errorType:   "FieldValueForbidden",
 		},
 		{
-			name:           "pod with WindowsOptions, no error",
-			sc:             &core.PodSpec{Containers: []core.Container{{SecurityContext: &core.SecurityContext{WindowsOptions: &core.WindowsSecurityContextOptions{RunAsUserName: utilpointer.String("dummy")}}}}},
-			expectError:    false,
-			featureEnabled: true,
-		},
-		{
-			name:           "pod with SELinux Options,  no IdentifyPodOS enabled",
-			sc:             &core.PodSpec{Containers: []core.Container{{SecurityContext: &core.SecurityContext{SELinuxOptions: &core.SELinuxOptions{Role: "dummy"}}}}},
-			expectError:    true,
-			errorMsg:       "cannot be set for a windows pod",
-			errorType:      "FieldValueForbidden",
-			featureEnabled: false,
-		},
-		{
-			name:           "pod with SeccompProfile, no IdentifyPodOS enabled",
-			sc:             &core.PodSpec{Containers: []core.Container{{SecurityContext: &core.SecurityContext{SeccompProfile: &core.SeccompProfile{LocalhostProfile: utilpointer.String("dummy")}}}}},
-			expectError:    true,
-			errorMsg:       "cannot be set for a windows pod",
-			errorType:      "FieldValueForbidden",
-			featureEnabled: false,
-		},
-		{
-			name:           "pod with WindowsOptions, no error,  no IdentifyPodOS enabled",
-			sc:             &core.PodSpec{Containers: []core.Container{{SecurityContext: &core.SecurityContext{WindowsOptions: &core.WindowsSecurityContextOptions{RunAsUserName: utilpointer.String("dummy")}}}}},
-			expectError:    false,
-			featureEnabled: false,
+			name:        "pod with WindowsOptions, no error",
+			sc:          &core.PodSpec{Containers: []core.Container{{SecurityContext: &core.SecurityContext{WindowsOptions: &core.WindowsSecurityContextOptions{RunAsUserName: utilpointer.String("dummy")}}}}},
+			expectError: false,
 		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			defer featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.IdentifyPodOS, test.featureEnabled)()
 			errs := validateWindows(test.sc, field.NewPath("field"))
 			if test.expectError && len(errs) > 0 {
 				if errs[0].Type != test.errorType {
@@ -17499,7 +17731,7 @@ func collectResourcePaths(t *testing.T, skipRecurseList sets.String, tp reflect.
 
 	paths := sets.NewString()
 	switch tp.Kind() {
-	case reflect.Ptr:
+	case reflect.Pointer:
 		paths.Insert(collectResourcePaths(t, skipRecurseList, tp.Elem(), path).List()...)
 	case reflect.Struct:
 		for i := 0; i < tp.NumField(); i++ {
@@ -17583,40 +17815,24 @@ func TestValidateLinuxSecurityContext(t *testing.T) {
 		WindowsOptions: &core.WindowsSecurityContextOptions{RunAsUserName: utilpointer.String("myUser")},
 	}
 	cases := map[string]struct {
-		sc             *core.PodSpec
-		expectErr      bool
-		errorType      field.ErrorType
-		errorDetail    string
-		featureEnabled bool
+		sc          *core.PodSpec
+		expectErr   bool
+		errorType   field.ErrorType
+		errorDetail string
 	}{
 		"valid SC, linux, no error": {
-			sc:             &core.PodSpec{Containers: []core.Container{{SecurityContext: validLinuxSC}}},
-			expectErr:      false,
-			featureEnabled: true,
+			sc:        &core.PodSpec{Containers: []core.Container{{SecurityContext: validLinuxSC}}},
+			expectErr: false,
 		},
 		"invalid SC, linux, error": {
-			sc:             &core.PodSpec{Containers: []core.Container{{SecurityContext: invalidLinuxSC}}},
-			errorType:      "FieldValueForbidden",
-			errorDetail:    "windows options cannot be set for a linux pod",
-			expectErr:      true,
-			featureEnabled: true,
-		},
-		"valid SC, linux, no error, no IdentifyPodOS featuregate": {
-			sc:             &core.PodSpec{Containers: []core.Container{{SecurityContext: validLinuxSC}}},
-			expectErr:      false,
-			featureEnabled: false,
-		},
-		"invalid SC, linux, error, no IdentifyPodOS featuregate": {
-			sc:             &core.PodSpec{Containers: []core.Container{{SecurityContext: invalidLinuxSC}}},
-			errorType:      "FieldValueForbidden",
-			errorDetail:    "windows options cannot be set for a linux pod",
-			expectErr:      true,
-			featureEnabled: false,
+			sc:          &core.PodSpec{Containers: []core.Container{{SecurityContext: invalidLinuxSC}}},
+			errorType:   "FieldValueForbidden",
+			errorDetail: "windows options cannot be set for a linux pod",
+			expectErr:   true,
 		},
 	}
 	for k, v := range cases {
 		t.Run(k, func(t *testing.T) {
-			defer featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.IdentifyPodOS, v.featureEnabled)()
 			errs := validateLinux(v.sc, field.NewPath("field"))
 			if v.expectErr && len(errs) > 0 {
 				if errs[0].Type != v.errorType || !strings.Contains(errs[0].Detail, v.errorDetail) {
@@ -18001,6 +18217,8 @@ func TestIsValidSysctlName(t *testing.T) {
 		"a-b",
 		"abc",
 		"abc.def",
+		"a/b/c/d",
+		"a/b.c",
 	}
 	invalid := []string{
 		"",
@@ -18025,6 +18243,10 @@ func TestIsValidSysctlName(t *testing.T) {
 		"a.abc*",
 		"a.b.*",
 		"Abc",
+		"/",
+		"/a",
+		"a/abc*",
+		"a/b/*",
 		func(n int) string {
 			x := make([]byte, n)
 			for i := range x {
@@ -18034,34 +18256,13 @@ func TestIsValidSysctlName(t *testing.T) {
 		}(256),
 	}
 
-	containSlashesValid := []string{
-		"a/b/c/d",
-		"a/b.c",
-	}
-
-	containSlashesInvalid := []string{
-		"/",
-		"/a",
-		"a/abc*",
-		"a/b/*",
-	}
 	for _, s := range valid {
-		if !IsValidSysctlName(s, false) {
+		if !IsValidSysctlName(s) {
 			t.Errorf("%q expected to be a valid sysctl name", s)
 		}
 	}
 	for _, s := range invalid {
-		if IsValidSysctlName(s, false) {
-			t.Errorf("%q expected to be an invalid sysctl name", s)
-		}
-	}
-	for _, s := range containSlashesValid {
-		if !IsValidSysctlName(s, true) {
-			t.Errorf("%q expected to be a valid sysctl name", s)
-		}
-	}
-	for _, s := range containSlashesInvalid {
-		if IsValidSysctlName(s, true) {
+		if IsValidSysctlName(s) {
 			t.Errorf("%q expected to be an invalid sysctl name", s)
 		}
 	}
@@ -18071,6 +18272,8 @@ func TestValidateSysctls(t *testing.T) {
 	valid := []string{
 		"net.foo.bar",
 		"kernel.shmmax",
+		"net.ipv4.conf.enp3s0/200.forwarding",
+		"net/ipv4/conf/enp3s0.200/forwarding",
 	}
 	invalid := []string{
 		"i..nvalid",
@@ -18082,16 +18285,11 @@ func TestValidateSysctls(t *testing.T) {
 		"kernel.shmmax",
 	}
 
-	containSlashes := []string{
-		"net.ipv4.conf.enp3s0/200.forwarding",
-		"net/ipv4/conf/enp3s0.200/forwarding",
-	}
-
 	sysctls := make([]core.Sysctl, len(valid))
 	for i, sysctl := range valid {
 		sysctls[i].Name = sysctl
 	}
-	errs := validateSysctls(sysctls, field.NewPath("foo"), false)
+	errs := validateSysctls(sysctls, field.NewPath("foo"))
 	if len(errs) != 0 {
 		t.Errorf("unexpected validation errors: %v", errs)
 	}
@@ -18100,7 +18298,7 @@ func TestValidateSysctls(t *testing.T) {
 	for i, sysctl := range invalid {
 		sysctls[i].Name = sysctl
 	}
-	errs = validateSysctls(sysctls, field.NewPath("foo"), false)
+	errs = validateSysctls(sysctls, field.NewPath("foo"))
 	if len(errs) != 2 {
 		t.Errorf("expected 2 validation errors. Got: %v", errs)
 	} else {
@@ -18116,20 +18314,11 @@ func TestValidateSysctls(t *testing.T) {
 	for i, sysctl := range duplicates {
 		sysctls[i].Name = sysctl
 	}
-	errs = validateSysctls(sysctls, field.NewPath("foo"), false)
+	errs = validateSysctls(sysctls, field.NewPath("foo"))
 	if len(errs) != 1 {
 		t.Errorf("unexpected validation errors: %v", errs)
 	} else if errs[0].Type != field.ErrorTypeDuplicate {
 		t.Errorf("expected error type %v, got %v", field.ErrorTypeDuplicate, errs[0].Type)
-	}
-
-	sysctls = make([]core.Sysctl, len(containSlashes))
-	for i, sysctl := range containSlashes {
-		sysctls[i].Name = sysctl
-	}
-	errs = validateSysctls(sysctls, field.NewPath("foo"), true)
-	if len(errs) != 0 {
-		t.Errorf("unexpected validation errors: %v", errs)
 	}
 }
 
@@ -18659,57 +18848,121 @@ func TestAnyDataSource(t *testing.T) {
 }
 
 func TestValidateTopologySpreadConstraints(t *testing.T) {
+	fieldPath := field.NewPath("field")
+	subFldPath0 := fieldPath.Index(0)
+	fieldPathMinDomains := subFldPath0.Child("minDomains")
+	fieldPathMaxSkew := subFldPath0.Child("maxSkew")
+	fieldPathTopologyKey := subFldPath0.Child("topologyKey")
+	fieldPathWhenUnsatisfiable := subFldPath0.Child("whenUnsatisfiable")
+	fieldPathTopologyKeyAndWhenUnsatisfiable := subFldPath0.Child("{topologyKey, whenUnsatisfiable}")
+	nodeAffinityField := subFldPath0.Child("nodeAffinityPolicy")
+	nodeTaintsField := subFldPath0.Child("nodeTaintsPolicy")
+	unknown := core.NodeInclusionPolicy("Unknown")
+	ignore := core.NodeInclusionPolicyIgnore
+	honor := core.NodeInclusionPolicyHonor
+
 	testCases := []struct {
-		name        string
-		constraints []core.TopologySpreadConstraint
-		errtype     field.ErrorType
-		errfield    string
+		name            string
+		constraints     []core.TopologySpreadConstraint
+		wantFieldErrors field.ErrorList
 	}{
 		{
 			name: "all required fields ok",
 			constraints: []core.TopologySpreadConstraint{
-				{MaxSkew: 1, TopologyKey: "k8s.io/zone", WhenUnsatisfiable: core.DoNotSchedule},
+				{
+					MaxSkew:           1,
+					TopologyKey:       "k8s.io/zone",
+					WhenUnsatisfiable: core.DoNotSchedule,
+					MinDomains:        utilpointer.Int32(3),
+				},
 			},
+			wantFieldErrors: field.ErrorList{},
 		},
 		{
 			name: "missing MaxSkew",
 			constraints: []core.TopologySpreadConstraint{
 				{TopologyKey: "k8s.io/zone", WhenUnsatisfiable: core.DoNotSchedule},
 			},
-			errtype:  field.ErrorTypeInvalid,
-			errfield: "maxSkew",
+			wantFieldErrors: []*field.Error{field.Invalid(fieldPathMaxSkew, int32(0), isNotPositiveErrorMsg)},
 		},
 		{
-			name: "invalid MaxSkew",
+			name: "negative MaxSkew",
 			constraints: []core.TopologySpreadConstraint{
-				{MaxSkew: 0, TopologyKey: "k8s.io/zone", WhenUnsatisfiable: core.DoNotSchedule},
+				{MaxSkew: -1, TopologyKey: "k8s.io/zone", WhenUnsatisfiable: core.DoNotSchedule},
 			},
-			errtype:  field.ErrorTypeInvalid,
-			errfield: "maxSkew",
+			wantFieldErrors: []*field.Error{field.Invalid(fieldPathMaxSkew, int32(-1), isNotPositiveErrorMsg)},
+		},
+		{
+			name: "can use MinDomains with ScheduleAnyway, when MinDomains = nil",
+			constraints: []core.TopologySpreadConstraint{
+				{
+					MaxSkew:           1,
+					TopologyKey:       "k8s.io/zone",
+					WhenUnsatisfiable: core.ScheduleAnyway,
+					MinDomains:        nil,
+				},
+			},
+			wantFieldErrors: field.ErrorList{},
+		},
+		{
+			name: "negative minDomains is invalid",
+			constraints: []core.TopologySpreadConstraint{
+				{
+					MaxSkew:           1,
+					TopologyKey:       "k8s.io/zone",
+					WhenUnsatisfiable: core.DoNotSchedule,
+					MinDomains:        utilpointer.Int32(-1),
+				},
+			},
+			wantFieldErrors: []*field.Error{field.Invalid(fieldPathMinDomains, utilpointer.Int32(-1), isNotPositiveErrorMsg)},
+		},
+		{
+			name: "cannot use non-nil MinDomains with ScheduleAnyway",
+			constraints: []core.TopologySpreadConstraint{
+				{
+					MaxSkew:           1,
+					TopologyKey:       "k8s.io/zone",
+					WhenUnsatisfiable: core.ScheduleAnyway,
+					MinDomains:        utilpointer.Int32(10),
+				},
+			},
+			wantFieldErrors: []*field.Error{field.Invalid(fieldPathMinDomains, utilpointer.Int32(10), fmt.Sprintf("can only use minDomains if whenUnsatisfiable=%s, not %s", string(core.DoNotSchedule), string(core.ScheduleAnyway)))},
+		},
+		{
+			name: "use negative MinDomains with ScheduleAnyway(invalid)",
+			constraints: []core.TopologySpreadConstraint{
+				{
+					MaxSkew:           1,
+					TopologyKey:       "k8s.io/zone",
+					WhenUnsatisfiable: core.ScheduleAnyway,
+					MinDomains:        utilpointer.Int32(-1),
+				},
+			},
+			wantFieldErrors: []*field.Error{
+				field.Invalid(fieldPathMinDomains, utilpointer.Int32(-1), isNotPositiveErrorMsg),
+				field.Invalid(fieldPathMinDomains, utilpointer.Int32(-1), fmt.Sprintf("can only use minDomains if whenUnsatisfiable=%s, not %s", string(core.DoNotSchedule), string(core.ScheduleAnyway))),
+			},
 		},
 		{
 			name: "missing TopologyKey",
 			constraints: []core.TopologySpreadConstraint{
 				{MaxSkew: 1, WhenUnsatisfiable: core.DoNotSchedule},
 			},
-			errtype:  field.ErrorTypeRequired,
-			errfield: "topologyKey",
+			wantFieldErrors: []*field.Error{field.Required(fieldPathTopologyKey, "can not be empty")},
 		},
 		{
 			name: "missing scheduling mode",
 			constraints: []core.TopologySpreadConstraint{
 				{MaxSkew: 1, TopologyKey: "k8s.io/zone"},
 			},
-			errtype:  field.ErrorTypeNotSupported,
-			errfield: "whenUnsatisfiable",
+			wantFieldErrors: []*field.Error{field.NotSupported(fieldPathWhenUnsatisfiable, core.UnsatisfiableConstraintAction(""), supportedScheduleActions.List())},
 		},
 		{
 			name: "unsupported scheduling mode",
 			constraints: []core.TopologySpreadConstraint{
 				{MaxSkew: 1, TopologyKey: "k8s.io/zone", WhenUnsatisfiable: core.UnsatisfiableConstraintAction("N/A")},
 			},
-			errtype:  field.ErrorTypeNotSupported,
-			errfield: "whenUnsatisfiable",
+			wantFieldErrors: []*field.Error{field.NotSupported(fieldPathWhenUnsatisfiable, core.UnsatisfiableConstraintAction("N/A"), supportedScheduleActions.List())},
 		},
 		{
 			name: "multiple constraints ok with all required fields",
@@ -18717,15 +18970,15 @@ func TestValidateTopologySpreadConstraints(t *testing.T) {
 				{MaxSkew: 1, TopologyKey: "k8s.io/zone", WhenUnsatisfiable: core.DoNotSchedule},
 				{MaxSkew: 2, TopologyKey: "k8s.io/node", WhenUnsatisfiable: core.ScheduleAnyway},
 			},
+			wantFieldErrors: field.ErrorList{},
 		},
 		{
 			name: "multiple constraints missing TopologyKey on partial ones",
 			constraints: []core.TopologySpreadConstraint{
-				{MaxSkew: 1, TopologyKey: "k8s.io/zone", WhenUnsatisfiable: core.DoNotSchedule},
-				{MaxSkew: 2, WhenUnsatisfiable: core.ScheduleAnyway},
+				{MaxSkew: 1, WhenUnsatisfiable: core.ScheduleAnyway},
+				{MaxSkew: 2, TopologyKey: "k8s.io/zone", WhenUnsatisfiable: core.DoNotSchedule},
 			},
-			errtype:  field.ErrorTypeRequired,
-			errfield: "topologyKey",
+			wantFieldErrors: []*field.Error{field.Required(fieldPathTopologyKey, "can not be empty")},
 		},
 		{
 			name: "duplicate constraints",
@@ -18733,25 +18986,62 @@ func TestValidateTopologySpreadConstraints(t *testing.T) {
 				{MaxSkew: 1, TopologyKey: "k8s.io/zone", WhenUnsatisfiable: core.DoNotSchedule},
 				{MaxSkew: 2, TopologyKey: "k8s.io/zone", WhenUnsatisfiable: core.DoNotSchedule},
 			},
-			errtype:  field.ErrorTypeDuplicate,
-			errfield: "{topologyKey, whenUnsatisfiable}",
+			wantFieldErrors: []*field.Error{
+				field.Duplicate(fieldPathTopologyKeyAndWhenUnsatisfiable, fmt.Sprintf("{%v, %v}", "k8s.io/zone", core.DoNotSchedule)),
+			},
+		},
+		{
+			name: "supported policy name set on NodeAffinityPolicy and NodeTaintsPolicy",
+			constraints: []core.TopologySpreadConstraint{
+				{
+					MaxSkew:            1,
+					TopologyKey:        "k8s.io/zone",
+					WhenUnsatisfiable:  core.DoNotSchedule,
+					NodeAffinityPolicy: &honor,
+					NodeTaintsPolicy:   &ignore,
+				},
+			},
+			wantFieldErrors: []*field.Error{},
+		},
+		{
+			name: "unsupported policy name set on NodeAffinityPolicy",
+			constraints: []core.TopologySpreadConstraint{
+				{
+					MaxSkew:            1,
+					TopologyKey:        "k8s.io/zone",
+					WhenUnsatisfiable:  core.DoNotSchedule,
+					NodeAffinityPolicy: &unknown,
+					NodeTaintsPolicy:   &ignore,
+				},
+			},
+			wantFieldErrors: []*field.Error{
+				field.NotSupported(nodeAffinityField, &unknown, supportedPodTopologySpreadNodePolicies.List()),
+			},
+		},
+		{
+			name: "unsupported policy name set on NodeTaintsPolicy",
+			constraints: []core.TopologySpreadConstraint{
+				{
+					MaxSkew:            1,
+					TopologyKey:        "k8s.io/zone",
+					WhenUnsatisfiable:  core.DoNotSchedule,
+					NodeAffinityPolicy: &honor,
+					NodeTaintsPolicy:   &unknown,
+				},
+			},
+			wantFieldErrors: []*field.Error{
+				field.NotSupported(nodeTaintsField, &unknown, supportedPodTopologySpreadNodePolicies.List()),
+			},
 		},
 	}
 
-	for i, tc := range testCases {
-		errs := validateTopologySpreadConstraints(tc.constraints, field.NewPath("field"))
-
-		if len(errs) > 0 && tc.errtype == "" {
-			t.Errorf("[%d: %q] unexpected error(s): %v", i, tc.name, errs)
-		} else if len(errs) == 0 && tc.errtype != "" {
-			t.Errorf("[%d: %q] expected error type %v", i, tc.name, tc.errtype)
-		} else if len(errs) >= 1 {
-			if errs[0].Type != tc.errtype {
-				t.Errorf("[%d: %q] expected error type %v, got %v", i, tc.name, tc.errtype, errs[0].Type)
-			} else if !strings.HasSuffix(errs[0].Field, "."+tc.errfield) {
-				t.Errorf("[%d: %q] expected error on field %q, got %q", i, tc.name, tc.errfield, errs[0].Field)
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			errs := validateTopologySpreadConstraints(tc.constraints, fieldPath)
+			if diff := cmp.Diff(tc.wantFieldErrors, errs); diff != "" {
+				t.Errorf("unexpected field errors (-want, +got):\n%s", diff)
 			}
-		}
+		})
 	}
 }
 
@@ -19307,7 +19597,7 @@ func TestValidateSeccompAnnotationsAndFieldsMatch(t *testing.T) {
 
 	for i, test := range tests {
 		err := validateSeccompAnnotationsAndFieldsMatch(test.annotationValue, test.seccompField, test.fldPath)
-		asserttestify.Equal(t, test.expectedErr, err, "TestCase[%d]: %s", i, test.description)
+		assert.Equal(t, test.expectedErr, err, "TestCase[%d]: %s", i, test.description)
 	}
 }
 
@@ -19436,7 +19726,7 @@ func TestValidatePodTemplateSpecSeccomp(t *testing.T) {
 
 	for i, test := range tests {
 		err := ValidatePodTemplateSpec(test.spec, rootFld, PodValidationOptions{})
-		asserttestify.Equal(t, test.expectedErr, err, "TestCase[%d]: %s", i, test.description)
+		assert.Equal(t, test.expectedErr, err, "TestCase[%d]: %s", i, test.description)
 	}
 }
 
@@ -19532,6 +19822,7 @@ func TestValidateNonSpecialIP(t *testing.T) {
 		ip   string
 	}{
 		{"ipv4", "10.1.2.3"},
+		{"ipv4 class E", "244.1.2.3"},
 		{"ipv6", "2000::1"},
 	} {
 		t.Run(tc.desc, func(t *testing.T) {
@@ -20042,83 +20333,44 @@ func TestValidateWindowsHostProcessPod(t *testing.T) {
 
 func TestValidateOS(t *testing.T) {
 	testCases := []struct {
-		name           string
-		expectError    bool
-		featureEnabled bool
-		podSpec        *core.PodSpec
+		name        string
+		expectError bool
+		podSpec     *core.PodSpec
 	}{
 		{
-			name:           "no OS field, featuregate",
-			expectError:    false,
-			featureEnabled: true,
-			podSpec:        &core.PodSpec{OS: nil},
+			name:        "no OS field, featuregate",
+			expectError: false,
+			podSpec:     &core.PodSpec{OS: nil},
 		},
 		{
-			name:           "empty OS field, featuregate",
-			expectError:    true,
-			featureEnabled: true,
-			podSpec:        &core.PodSpec{OS: &core.PodOS{}},
+			name:        "empty OS field, featuregate",
+			expectError: true,
+			podSpec:     &core.PodSpec{OS: &core.PodOS{}},
 		},
 		{
-			name:           "no OS field, no featuregate",
-			expectError:    false,
-			featureEnabled: false,
-			podSpec:        &core.PodSpec{OS: nil},
+			name:        "OS field, featuregate, valid OS",
+			expectError: false,
+			podSpec:     &core.PodSpec{OS: &core.PodOS{Name: core.Linux}},
 		},
 		{
-			name:           "empty OS field, no featuregate",
-			expectError:    true,
-			featureEnabled: false,
-			podSpec:        &core.PodSpec{OS: &core.PodOS{}},
+			name:        "OS field, featuregate, valid OS",
+			expectError: false,
+			podSpec:     &core.PodSpec{OS: &core.PodOS{Name: core.Windows}},
 		},
 		{
-			name:           "OS field, featuregate, valid OS",
-			expectError:    false,
-			featureEnabled: true,
-			podSpec:        &core.PodSpec{OS: &core.PodOS{Name: core.Linux}},
+			name:        "OS field, featuregate, empty OS",
+			expectError: true,
+			podSpec:     &core.PodSpec{OS: &core.PodOS{Name: ""}},
 		},
 		{
-			name:           "OS field, featuregate, valid OS",
-			expectError:    false,
-			featureEnabled: true,
-			podSpec:        &core.PodSpec{OS: &core.PodOS{Name: core.Windows}},
-		},
-		{
-			name:           "OS field, featuregate, empty OS",
-			expectError:    true,
-			featureEnabled: true,
-			podSpec:        &core.PodSpec{OS: &core.PodOS{Name: ""}},
-		},
-		{
-			name:           "OS field, no featuregate, empty OS",
-			expectError:    true,
-			featureEnabled: false,
-			podSpec:        &core.PodSpec{OS: &core.PodOS{Name: ""}},
-		},
-		{
-			name:           "OS field, featuregate, invalid OS",
-			expectError:    true,
-			featureEnabled: true,
-			podSpec:        &core.PodSpec{OS: &core.PodOS{Name: "dummyOS"}},
-		},
-		{
-			name:           "OS field, no featuregate, valid OS",
-			expectError:    true,
-			featureEnabled: false,
-			podSpec:        &core.PodSpec{OS: &core.PodOS{Name: core.Linux}},
-		},
-		{
-			name:           "OS field, no featuregate, invalid OS",
-			expectError:    true,
-			featureEnabled: false,
-			podSpec:        &core.PodSpec{OS: &core.PodOS{Name: "dummyOS"}},
+			name:        "OS field, featuregate, invalid OS",
+			expectError: true,
+			podSpec:     &core.PodSpec{OS: &core.PodOS{Name: "dummyOS"}},
 		},
 	}
 	for _, testCase := range testCases {
 		t.Run(testCase.name, func(t *testing.T) {
-			defer featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.IdentifyPodOS, testCase.featureEnabled)()
-
-			errs := validateOS(testCase.podSpec, field.NewPath("spec"), PodValidationOptions{AllowOSField: testCase.featureEnabled})
+			errs := validateOS(testCase.podSpec, field.NewPath("spec"), PodValidationOptions{})
 			if testCase.expectError && len(errs) == 0 {
 				t.Errorf("Unexpected success")
 			}
@@ -20149,5 +20401,67 @@ func TestValidateAppArmorProfileFormat(t *testing.T) {
 		} else {
 			assert.Error(t, err, fmt.Sprintf("Profile %s should not be valid", test.profile))
 		}
+	}
+}
+
+func TestValidatePVSecretReference(t *testing.T) {
+	rootFld := field.NewPath("name")
+	type args struct {
+		secretRef *core.SecretReference
+		fldPath   *field.Path
+	}
+	tests := []struct {
+		name          string
+		args          args
+		expectError   bool
+		expectedError string
+	}{
+		{
+			name:          "invalid secret ref name",
+			args:          args{&core.SecretReference{Name: "$%^&*#", Namespace: "default"}, rootFld},
+			expectError:   true,
+			expectedError: "name.name: Invalid value: \"$%^&*#\": " + dnsLabelErrMsg,
+		},
+		{
+			name:          "invalid secret ref namespace",
+			args:          args{&core.SecretReference{Name: "valid", Namespace: "$%^&*#"}, rootFld},
+			expectError:   true,
+			expectedError: "name.namespace: Invalid value: \"$%^&*#\": " + dnsLabelErrMsg,
+		},
+		{
+			name:          "invalid secret: missing namespace",
+			args:          args{&core.SecretReference{Name: "valid"}, rootFld},
+			expectError:   true,
+			expectedError: "name.namespace: Required value",
+		},
+		{
+			name:          "invalid secret : missing name",
+			args:          args{&core.SecretReference{Namespace: "default"}, rootFld},
+			expectError:   true,
+			expectedError: "name.name: Required value",
+		},
+		{
+			name:          "valid secret",
+			args:          args{&core.SecretReference{Name: "valid", Namespace: "default"}, rootFld},
+			expectError:   false,
+			expectedError: "",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			errs := validatePVSecretReference(tt.args.secretRef, false, tt.args.fldPath)
+			if tt.expectError && len(errs) == 0 {
+				t.Errorf("Unexpected success")
+			}
+			if tt.expectError && len(errs) != 0 {
+				str := errs[0].Error()
+				if str != "" && !strings.Contains(str, tt.expectedError) {
+					t.Errorf("%s: expected error detail either empty or %q, got %q", tt.name, tt.expectedError, str)
+				}
+			}
+			if !tt.expectError && len(errs) != 0 {
+				t.Errorf("Unexpected error(s): %v", errs)
+			}
+		})
 	}
 }

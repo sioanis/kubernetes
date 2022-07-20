@@ -65,7 +65,6 @@ func (c *healthCheck) Name() string {
 // CheckClusterHealth makes sure:
 // - the API /healthz endpoint is healthy
 // - all control-plane Nodes are Ready
-// - (if self-hosted) that there are DaemonSets with at least one Pod for all control plane components
 // - (if static pod-hosted) that all required Static Pod manifests exist on disk
 func CheckClusterHealth(client clientset.Interface, cfg *kubeadmapi.ClusterConfiguration, ignoreChecksErrors sets.String) error {
 	fmt.Println("[upgrade] Running cluster health checks")
@@ -172,7 +171,7 @@ func createJob(client clientset.Interface, cfg *kubeadmapi.ClusterConfiguration)
 		return errors.Wrapf(lastError, "could not create Job %q in the namespace %q", jobName, ns)
 	}
 
-	// Waiting and manually deleteing the Job is a workaround to not enabling the TTL controller.
+	// Waiting and manually deleting the Job is a workaround to not enabling the TTL controller.
 	// TODO: refactor this if the TTL controller is enabled in kubeadm once it goes Beta.
 
 	// Wait for the Job to complete

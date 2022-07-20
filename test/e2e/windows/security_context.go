@@ -22,7 +22,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/onsi/ginkgo"
+	"github.com/onsi/ginkgo/v2"
 	"github.com/onsi/gomega"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -34,12 +34,14 @@ import (
 	e2epod "k8s.io/kubernetes/test/e2e/framework/pod"
 	testutils "k8s.io/kubernetes/test/utils"
 	imageutils "k8s.io/kubernetes/test/utils/image"
+	admissionapi "k8s.io/pod-security-admission/api"
 )
 
 const runAsUserNameContainerName = "run-as-username-container"
 
 var _ = SIGDescribe("[Feature:Windows] SecurityContext", func() {
 	f := framework.NewDefaultFramework("windows-run-as-username")
+	f.NamespacePodSecurityEnforceLevel = admissionapi.LevelPrivileged
 
 	ginkgo.It("should be able create pods and run containers with a given username", func() {
 		ginkgo.By("Creating 2 pods: 1 with the default user, and one with a custom one.")

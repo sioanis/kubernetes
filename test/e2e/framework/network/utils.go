@@ -28,7 +28,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/onsi/ginkgo"
+	"github.com/onsi/ginkgo/v2"
 	v1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -848,6 +848,11 @@ func (config *NetworkingTestConfig) createNetProxyPods(podName string, selector 
 		pod := config.createNetShellPodSpec(podName, hostname)
 		pod.ObjectMeta.Labels = selector
 		pod.Spec.HostNetwork = config.EndpointsHostNetwork
+
+		// NOTE(claudiub): In order to use HostNetwork on Windows, we need to use Privileged Containers.
+		if pod.Spec.HostNetwork && framework.NodeOSDistroIs("windows") {
+			e2epod.WithWindowsHostProcess(pod, "")
+		}
 		createdPod := config.createPod(pod)
 		createdPods = append(createdPods, createdPod)
 	}

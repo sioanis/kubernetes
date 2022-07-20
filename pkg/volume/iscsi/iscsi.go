@@ -35,7 +35,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/kubernetes/pkg/volume"
-	"k8s.io/kubernetes/pkg/volume/util"
 	ioutil "k8s.io/kubernetes/pkg/volume/util"
 	"k8s.io/kubernetes/pkg/volume/util/volumepathhandler"
 )
@@ -224,7 +223,7 @@ func (plugin *iscsiPlugin) ConstructVolumeSpec(volumeName, mountPath string) (*v
 	// leave the global mount still mounted, while marking the volume as unused.
 	// The volume can then be mounted on several nodes, resulting in volume
 	// corruption.
-	paths, err := util.GetReliableMountRefs(mounter, mountPath)
+	paths, err := ioutil.GetReliableMountRefs(mounter, mountPath)
 	if io.IsInconsistentReadError(err) {
 		klog.Errorf("Failed to read mount refs from /proc/mounts for %s: %s", mountPath, err)
 		klog.Errorf("Kubelet cannot unmount volume at %s, please unmount it and all mounts of the same device manually.", mountPath)
@@ -346,17 +345,10 @@ var _ volume.Mounter = &iscsiDiskMounter{}
 
 func (b *iscsiDiskMounter) GetAttributes() volume.Attributes {
 	return volume.Attributes{
-		ReadOnly:        b.readOnly,
-		Managed:         !b.readOnly,
-		SupportsSELinux: true,
+		ReadOnly:       b.readOnly,
+		Managed:        !b.readOnly,
+		SELinuxRelabel: true,
 	}
-}
-
-// Checks prior to mount operations to verify that the required components (binaries, etc.)
-// to mount the volume are available on the underlying node.
-// If not, it returns an error
-func (b *iscsiDiskMounter) CanMount() error {
-	return nil
 }
 
 func (b *iscsiDiskMounter) SetUp(mounterArgs volume.MounterArgs) error {

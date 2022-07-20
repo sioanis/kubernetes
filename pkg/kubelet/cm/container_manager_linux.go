@@ -30,8 +30,7 @@ import (
 	"time"
 
 	"github.com/opencontainers/runc/libcontainer/cgroups"
-	cgroupfs "github.com/opencontainers/runc/libcontainer/cgroups/fs"
-	cgroupfs2 "github.com/opencontainers/runc/libcontainer/cgroups/fs2"
+	"github.com/opencontainers/runc/libcontainer/cgroups/manager"
 	"github.com/opencontainers/runc/libcontainer/configs"
 	"k8s.io/klog/v2"
 	"k8s.io/mount-utils"
@@ -257,8 +256,8 @@ func NewContainerManager(mountUtil mount.Interface, cadvisorInterface cadvisor.I
 		// of note, we always use the cgroupfs driver when performing this check since
 		// the input is provided in that format.
 		// this is important because we do not want any name conversion to occur.
-		if !cgroupManager.Exists(cgroupRoot) {
-			return nil, fmt.Errorf("invalid configuration: cgroup-root %q doesn't exist", cgroupRoot)
+		if err := cgroupManager.Validate(cgroupRoot); err != nil {
+			return nil, fmt.Errorf("invalid configuration: %w", err)
 		}
 		klog.InfoS("Container manager verified user specified cgroup-root exists", "cgroupRoot", cgroupRoot)
 		// Include the top level cgroup for enforcing node allocatable into cgroup-root.
@@ -380,13 +379,10 @@ func createManager(containerName string) (cgroups.Manager, error) {
 		Resources: &configs.Resources{
 			SkipDevices: true,
 		},
+		Systemd: false,
 	}
 
-	if cgroups.IsCgroup2UnifiedMode() {
-		return cgroupfs2.NewManager(cg, "", false)
-
-	}
-	return cgroupfs.NewManager(cg, nil, false), nil
+	return manager.New(cg)
 }
 
 type KernelTunableBehavior string
@@ -562,11 +558,8 @@ func (cm *containerManagerImpl) Start(node *v1.Node,
 
 	// Initialize CPU manager
 	if utilfeature.DefaultFeatureGate.Enabled(kubefeatures.CPUManager) {
-		containerMap, err := buildContainerMapFromRuntime(runtimeService)
-		if err != nil {
-			return fmt.Errorf("failed to build map of initial containers from runtime: %v", err)
-		}
-		err = cm.cpuManager.Start(cpumanager.ActivePodsFunc(activePods), sourcesReady, podStatusProvider, runtimeService, containerMap)
+		containerMap := buildContainerMapFromRuntime(runtimeService)
+		err := cm.cpuManager.Start(cpumanager.ActivePodsFunc(activePods), sourcesReady, podStatusProvider, runtimeService, containerMap)
 		if err != nil {
 			return fmt.Errorf("start cpu manager error: %v", err)
 		}
@@ -574,11 +567,8 @@ func (cm *containerManagerImpl) Start(node *v1.Node,
 
 	// Initialize memory manager
 	if utilfeature.DefaultFeatureGate.Enabled(kubefeatures.MemoryManager) {
-		containerMap, err := buildContainerMapFromRuntime(runtimeService)
-		if err != nil {
-			return fmt.Errorf("failed to build map of initial containers from runtime: %v", err)
-		}
-		err = cm.memoryManager.Start(memorymanager.ActivePodsFunc(activePods), sourcesReady, podStatusProvider, runtimeService, containerMap)
+		containerMap := buildContainerMapFromRuntime(runtimeService)
+		err := cm.memoryManager.Start(memorymanager.ActivePodsFunc(activePods), sourcesReady, podStatusProvider, runtimeService, containerMap)
 		if err != nil {
 			return fmt.Errorf("start memory manager error: %v", err)
 		}
@@ -735,7 +725,7 @@ func (cm *containerManagerImpl) SystemCgroupsLimit() v1.ResourceList {
 	}
 }
 
-func buildContainerMapFromRuntime(runtimeService internalapi.RuntimeService) (containermap.ContainerMap, error) {
+func buildContainerMapFromRuntime(runtimeService internalapi.RuntimeService) containermap.ContainerMap {
 	podSandboxMap := make(map[string]string)
 	podSandboxList, _ := runtimeService.ListPodSandbox(nil)
 	for _, p := range podSandboxList {
@@ -746,12 +736,13 @@ func buildContainerMapFromRuntime(runtimeService internalapi.RuntimeService) (co
 	containerList, _ := runtimeService.ListContainers(nil)
 	for _, c := range containerList {
 		if _, exists := podSandboxMap[c.PodSandboxId]; !exists {
-			return nil, fmt.Errorf("no PodsandBox found with Id '%s' for container with ID '%s' and Name '%s'", c.PodSandboxId, c.Id, c.Metadata.Name)
+			klog.InfoS("no PodSandBox found for the container", "podSandboxId", c.PodSandboxId, "containerName", c.Metadata.Name, "containerId", c.Id)
+			continue
 		}
 		containerMap.Add(podSandboxMap[c.PodSandboxId], c.Metadata.Name, c.Id)
 	}
 
-	return containerMap, nil
+	return containerMap
 }
 
 func isProcessRunningInHost(pid int) (bool, error) {
@@ -923,7 +914,31 @@ func isKernelPid(pid int) bool {
 	return err != nil && os.IsNotExist(err)
 }
 
+// GetCapacity returns node capacity data for "cpu", "memory", "ephemeral-storage", and "huge-pages*"
+// At present this method is only invoked when introspecting ephemeral storage
 func (cm *containerManagerImpl) GetCapacity() v1.ResourceList {
+	if utilfeature.DefaultFeatureGate.Enabled(kubefeatures.LocalStorageCapacityIsolation) {
+		// We store allocatable ephemeral-storage in the capacity property once we Start() the container manager
+		if _, ok := cm.capacity[v1.ResourceEphemeralStorage]; !ok {
+			// If we haven't yet stored the capacity for ephemeral-storage, we can try to fetch it directly from cAdvisor,
+			if cm.cadvisorInterface != nil {
+				rootfs, err := cm.cadvisorInterface.RootFsInfo()
+				if err != nil {
+					klog.ErrorS(err, "Unable to get rootfs data from cAdvisor interface")
+					// If the rootfsinfo retrieval from cAdvisor fails for any reason, fallback to returning the capacity property with no ephemeral storage data
+					return cm.capacity
+				}
+				// We don't want to mutate cm.capacity here so we'll manually construct a v1.ResourceList from it,
+				// and add ephemeral-storage
+				capacityWithEphemeralStorage := v1.ResourceList{}
+				for rName, rQuant := range cm.capacity {
+					capacityWithEphemeralStorage[rName] = rQuant
+				}
+				capacityWithEphemeralStorage[v1.ResourceEphemeralStorage] = cadvisor.EphemeralStorageCapacityFromFsInfo(rootfs)[v1.ResourceEphemeralStorage]
+				return capacityWithEphemeralStorage
+			}
+		}
+	}
 	return cm.capacity
 }
 

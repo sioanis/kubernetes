@@ -26,6 +26,7 @@ import (
 	"os/exec"
 	"runtime"
 	"strings"
+	"syscall"
 	"time"
 
 	"google.golang.org/grpc/grpclog"
@@ -128,7 +129,18 @@ func RunCustomEtcd(dataDir string, customFlags []string) (url string, stopFn fun
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	stop := func() {
-		cancel()
+		// try to exit etcd gracefully
+		defer cancel()
+		cmd.Process.Signal(syscall.SIGTERM)
+		go func() {
+			select {
+			case <-ctx.Done():
+				klog.Infof("etcd exited gracefully, context cancelled")
+			case <-time.After(5 * time.Second):
+				klog.Infof("etcd didn't exit in 5 seconds, killing it")
+				cancel()
+			}
+		}()
 		err := cmd.Wait()
 		klog.Infof("etcd exit status: %v", err)
 		err = os.RemoveAll(etcdDataDir)
@@ -172,12 +184,30 @@ func EtcdMain(tests func() int) {
 	// Bail out early when -help was given as parameter.
 	flag.Parse()
 
+	before := runtime.NumGoroutine()
 	stop, err := startEtcd()
 	if err != nil {
 		klog.Fatalf("cannot run integration tests: unable to start etcd: %v", err)
 	}
 	result := tests()
 	stop() // Don't defer this. See os.Exit documentation.
+
+	// Log the number of goroutines leaked.
+	// TODO: we should work on reducing this as much as possible.
+	var dg int
+	for i := 0; i < 10; i++ {
+		// Leave some room for goroutines we can not get rid of
+		// like k8s.io/klog/v2.(*loggingT).flushDaemon()
+		// TODO: adjust this number based on a more exhaustive analysis.
+		if dg = runtime.NumGoroutine() - before; dg <= 4 {
+			os.Exit(result)
+		}
+		// Allow goroutines to schedule and die off.
+		runtime.Gosched()
+		time.Sleep(100 * time.Millisecond)
+	}
+	after := runtime.NumGoroutine()
+	klog.Infof("unexpected number of goroutines: before: %d after %d", before, after)
 	os.Exit(result)
 }
 

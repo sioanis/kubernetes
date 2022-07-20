@@ -95,6 +95,8 @@ function set-windows-node-image() {
     WINDOWS_NODE_IMAGE="windows-server-2004-dc-core-v20210914"
   elif [[ "${WINDOWS_NODE_OS_DISTRIBUTION,,}" == "win20h2" ]]; then
     WINDOWS_NODE_IMAGE="windows-server-20h2-dc-core-v20210914"
+  elif [[ "${WINDOWS_NODE_OS_DISTRIBUTION,,}" == "win2022" ]]; then
+    WINDOWS_NODE_IMAGE="windows-server-2022-dc-core-v20220513"
   else
     echo "Unknown WINDOWS_NODE_OS_DISTRIBUTION ${WINDOWS_NODE_OS_DISTRIBUTION}" >&2
     exit 1
@@ -749,7 +751,6 @@ function construct-linux-kubelet-flags {
   flags="$(construct-common-kubelet-flags)"
   # Keep in sync with CONTAINERIZED_MOUNTER_HOME in configure-helper.sh
   flags+=" --experimental-mounter-path=/home/kubernetes/containerized_mounter/mounter"
-  flags+=" --experimental-check-node-capabilities-before-mount=true"
   # Keep in sync with the mkdir command in configure-helper.sh (until the TODO is resolved)
   flags+=" --cert-dir=/var/lib/kubelet/pki/"
 
@@ -1125,7 +1126,6 @@ KUBE_PROXY_MODE: $(yaml-quote "${KUBE_PROXY_MODE:-iptables}")
 DETECT_LOCAL_MODE: $(yaml-quote "${DETECT_LOCAL_MODE:-}")
 NODE_PROBLEM_DETECTOR_TOKEN: $(yaml-quote "${NODE_PROBLEM_DETECTOR_TOKEN:-}")
 ADMISSION_CONTROL: $(yaml-quote "${ADMISSION_CONTROL:-}")
-ENABLE_POD_SECURITY_POLICY: $(yaml-quote "${ENABLE_POD_SECURITY_POLICY:-}")
 MASTER_IP_RANGE: $(yaml-quote "${MASTER_IP_RANGE}")
 RUNTIME_CONFIG: $(yaml-quote "${RUNTIME_CONFIG}")
 CA_CERT: $(yaml-quote "${CA_CERT_BASE64:-}")
@@ -1176,6 +1176,7 @@ CONTAINER_RUNTIME: $(yaml-quote "${CONTAINER_RUNTIME:-}")
 CONTAINER_RUNTIME_ENDPOINT: $(yaml-quote "${CONTAINER_RUNTIME_ENDPOINT:-}")
 CONTAINER_RUNTIME_NAME: $(yaml-quote "${CONTAINER_RUNTIME_NAME:-}")
 CONTAINER_RUNTIME_TEST_HANDLER: $(yaml-quote "${CONTAINER_RUNTIME_TEST_HANDLER:-}")
+CONTAINERD_INFRA_CONTAINER: $(yaml-quote "${CONTAINER_INFRA_CONTAINER:-}")
 UBUNTU_INSTALL_CONTAINERD_VERSION: $(yaml-quote "${UBUNTU_INSTALL_CONTAINERD_VERSION:-}")
 UBUNTU_INSTALL_RUNC_VERSION: $(yaml-quote "${UBUNTU_INSTALL_RUNC_VERSION:-}")
 NODE_LOCAL_SSDS_EXT: $(yaml-quote "${NODE_LOCAL_SSDS_EXT:-}")

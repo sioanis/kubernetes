@@ -36,8 +36,9 @@ import (
 	"k8s.io/kubernetes/test/e2e/network/common"
 	testutils "k8s.io/kubernetes/test/utils"
 	imageutils "k8s.io/kubernetes/test/utils/image"
+	admissionapi "k8s.io/pod-security-admission/api"
 
-	"github.com/onsi/ginkgo"
+	"github.com/onsi/ginkgo/v2"
 )
 
 type durations []time.Duration
@@ -48,6 +49,7 @@ func (d durations) Swap(i, j int)      { d[i], d[j] = d[j], d[i] }
 
 var _ = common.SIGDescribe("Service endpoints latency", func() {
 	f := framework.NewDefaultFramework("svc-latency")
+	f.NamespacePodSecurityEnforceLevel = admissionapi.LevelBaseline
 
 	/*
 		Release: v1.9

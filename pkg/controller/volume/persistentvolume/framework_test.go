@@ -41,11 +41,10 @@ import (
 	storagelisters "k8s.io/client-go/listers/storage/v1"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/tools/record"
+	storagehelpers "k8s.io/component-helpers/storage/volume"
 	"k8s.io/kubernetes/pkg/controller"
 	pvtesting "k8s.io/kubernetes/pkg/controller/volume/persistentvolume/testing"
-	pvutil "k8s.io/kubernetes/pkg/controller/volume/persistentvolume/util"
 	"k8s.io/kubernetes/pkg/volume"
-	vol "k8s.io/kubernetes/pkg/volume"
 	"k8s.io/kubernetes/pkg/volume/util/recyclerclient"
 )
 
@@ -226,7 +225,7 @@ func newTestController(kubeClient clientset.Interface, informerFactory informers
 	params := ControllerParameters{
 		KubeClient:                kubeClient,
 		SyncPeriod:                5 * time.Second,
-		VolumePlugins:             []vol.VolumePlugin{},
+		VolumePlugins:             []volume.VolumePlugin{},
 		VolumeInformer:            informerFactory.Core().V1().PersistentVolumes(),
 		ClaimInformer:             informerFactory.Core().V1().PersistentVolumeClaims(),
 		ClassInformer:             informerFactory.Storage().V1().StorageClasses(),
@@ -286,7 +285,7 @@ func newVolume(name, capacity, boundToClaimUID, boundToClaimName string, phase v
 		volume.Annotations = make(map[string]string)
 		for _, a := range annotations {
 			switch a {
-			case pvutil.AnnDynamicallyProvisioned:
+			case storagehelpers.AnnDynamicallyProvisioned:
 				volume.Annotations[a] = mockPluginName
 			default:
 				volume.Annotations[a] = "yes"
@@ -295,6 +294,72 @@ func newVolume(name, capacity, boundToClaimUID, boundToClaimName string, phase v
 	}
 
 	return &volume
+}
+
+// newExternalProvisionedVolume returns a new volume with given attributes
+func newExternalProvisionedVolume(name, capacity, boundToClaimUID, boundToClaimName string, phase v1.PersistentVolumePhase, reclaimPolicy v1.PersistentVolumeReclaimPolicy, class string, driverName string, finalizers []string, annotations ...string) *v1.PersistentVolume {
+	fs := v1.PersistentVolumeFilesystem
+	volume := v1.PersistentVolume{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:            name,
+			ResourceVersion: "1",
+			Finalizers:      finalizers,
+		},
+		Spec: v1.PersistentVolumeSpec{
+			Capacity: v1.ResourceList{
+				v1.ResourceName(v1.ResourceStorage): resource.MustParse(capacity),
+			},
+			PersistentVolumeSource: v1.PersistentVolumeSource{
+				CSI: &v1.CSIPersistentVolumeSource{
+					Driver:       driverName,
+					VolumeHandle: "527b55dc-c7db-4574-9226-2e33318b06a3",
+					ReadOnly:     false,
+					FSType:       "ext4",
+					VolumeAttributes: map[string]string{
+						"Test-Key": "Test-Value",
+					},
+				},
+			},
+			AccessModes:                   []v1.PersistentVolumeAccessMode{v1.ReadWriteOnce, v1.ReadOnlyMany},
+			PersistentVolumeReclaimPolicy: reclaimPolicy,
+			StorageClassName:              class,
+			VolumeMode:                    &fs,
+		},
+		Status: v1.PersistentVolumeStatus{
+			Phase: phase,
+		},
+	}
+
+	if boundToClaimName != "" {
+		volume.Spec.ClaimRef = &v1.ObjectReference{
+			Kind:       "PersistentVolumeClaim",
+			APIVersion: "v1",
+			UID:        types.UID(boundToClaimUID),
+			Namespace:  testNamespace,
+			Name:       boundToClaimName,
+		}
+	}
+
+	if len(annotations) > 0 {
+		volume.Annotations = make(map[string]string)
+		for _, a := range annotations {
+			switch a {
+			case storagehelpers.AnnDynamicallyProvisioned:
+				volume.Annotations[a] = driverName
+			default:
+				volume.Annotations[a] = "yes"
+			}
+		}
+	}
+
+	return &volume
+}
+
+// newVolume returns a new volume with given attributes
+func newVolumeWithFinalizers(name, capacity, boundToClaimUID, boundToClaimName string, phase v1.PersistentVolumePhase, reclaimPolicy v1.PersistentVolumeReclaimPolicy, class string, finalizers []string, annotations ...string) *v1.PersistentVolume {
+	retVolume := newVolume(name, capacity, boundToClaimUID, boundToClaimName, phase, reclaimPolicy, class, annotations...)
+	retVolume.SetFinalizers(finalizers)
+	return retVolume
 }
 
 // withLabels applies the given labels to the first volume in the array and
@@ -409,7 +474,7 @@ func newClaim(name, claimUID, capacity, boundToVolume string, phase v1.Persisten
 		claim.Annotations = make(map[string]string)
 		for _, a := range annotations {
 			switch a {
-			case pvutil.AnnBetaStorageProvisioner, pvutil.AnnStorageProvisioner:
+			case storagehelpers.AnnBetaStorageProvisioner, storagehelpers.AnnStorageProvisioner:
 				claim.Annotations[a] = mockPluginName
 			default:
 				claim.Annotations[a] = "yes"
@@ -548,7 +613,7 @@ func wrapTestWithPluginCalls(expectedRecycleCalls, expectedDeleteCalls []error, 
 			deleteCalls:    expectedDeleteCalls,
 			provisionCalls: expectedProvisionCalls,
 		}
-		ctrl.volumePluginMgr.InitPlugins([]vol.VolumePlugin{plugin}, nil /* prober */, ctrl)
+		ctrl.volumePluginMgr.InitPlugins([]volume.VolumePlugin{plugin}, nil /* prober */, ctrl)
 		return toWrap(ctrl, reactor, test)
 	}
 }
@@ -591,7 +656,7 @@ func (t fakeCSIMigratedPluginManager) IsMigrationEnabledForPlugin(pluginName str
 func wrapTestWithCSIMigrationProvisionCalls(toWrap testCall) testCall {
 	plugin := &mockVolumePlugin{}
 	return func(ctrl *PersistentVolumeController, reactor *pvtesting.VolumeReactor, test controllerTest) error {
-		ctrl.volumePluginMgr.InitPlugins([]vol.VolumePlugin{plugin}, nil /* prober */, ctrl)
+		ctrl.volumePluginMgr.InitPlugins([]volume.VolumePlugin{plugin}, nil /* prober */, ctrl)
 		ctrl.translator = fakeCSINameTranslator{}
 		ctrl.csiMigratedPluginManager = fakeCSIMigratedPluginManager{}
 		return toWrap(ctrl, reactor, test)
@@ -858,7 +923,7 @@ type mockVolumePlugin struct {
 	deleteCallCounter    int
 	recycleCalls         []error
 	recycleCallCounter   int
-	provisionOptions     vol.VolumeOptions
+	provisionOptions     volume.VolumeOptions
 }
 
 type provisionCall struct {
@@ -866,12 +931,12 @@ type provisionCall struct {
 	ret                error
 }
 
-var _ vol.VolumePlugin = &mockVolumePlugin{}
-var _ vol.RecyclableVolumePlugin = &mockVolumePlugin{}
-var _ vol.DeletableVolumePlugin = &mockVolumePlugin{}
-var _ vol.ProvisionableVolumePlugin = &mockVolumePlugin{}
+var _ volume.VolumePlugin = &mockVolumePlugin{}
+var _ volume.RecyclableVolumePlugin = &mockVolumePlugin{}
+var _ volume.DeletableVolumePlugin = &mockVolumePlugin{}
+var _ volume.ProvisionableVolumePlugin = &mockVolumePlugin{}
 
-func (plugin *mockVolumePlugin) Init(host vol.VolumeHost) error {
+func (plugin *mockVolumePlugin) Init(host volume.VolumeHost) error {
 	return nil
 }
 
@@ -879,11 +944,11 @@ func (plugin *mockVolumePlugin) GetPluginName() string {
 	return mockPluginName
 }
 
-func (plugin *mockVolumePlugin) GetVolumeName(spec *vol.Spec) (string, error) {
+func (plugin *mockVolumePlugin) GetVolumeName(spec *volume.Spec) (string, error) {
 	return spec.Name(), nil
 }
 
-func (plugin *mockVolumePlugin) CanSupport(spec *vol.Spec) bool {
+func (plugin *mockVolumePlugin) CanSupport(spec *volume.Spec) bool {
 	return true
 }
 
@@ -899,21 +964,21 @@ func (plugin *mockVolumePlugin) SupportsBulkVolumeVerification() bool {
 	return false
 }
 
-func (plugin *mockVolumePlugin) ConstructVolumeSpec(volumeName, mountPath string) (*vol.Spec, error) {
+func (plugin *mockVolumePlugin) ConstructVolumeSpec(volumeName, mountPath string) (*volume.Spec, error) {
 	return nil, nil
 }
 
-func (plugin *mockVolumePlugin) NewMounter(spec *vol.Spec, podRef *v1.Pod, opts vol.VolumeOptions) (vol.Mounter, error) {
+func (plugin *mockVolumePlugin) NewMounter(spec *volume.Spec, podRef *v1.Pod, opts volume.VolumeOptions) (volume.Mounter, error) {
 	return nil, fmt.Errorf("Mounter is not supported by this plugin")
 }
 
-func (plugin *mockVolumePlugin) NewUnmounter(name string, podUID types.UID) (vol.Unmounter, error) {
+func (plugin *mockVolumePlugin) NewUnmounter(name string, podUID types.UID) (volume.Unmounter, error) {
 	return nil, fmt.Errorf("Unmounter is not supported by this plugin")
 }
 
 // Provisioner interfaces
 
-func (plugin *mockVolumePlugin) NewProvisioner(options vol.VolumeOptions) (vol.Provisioner, error) {
+func (plugin *mockVolumePlugin) NewProvisioner(options volume.VolumeOptions) (volume.Provisioner, error) {
 	if len(plugin.provisionCalls) > 0 {
 		// mockVolumePlugin directly implements Provisioner interface
 		klog.V(4).Infof("mock plugin NewProvisioner called, returning mock provisioner")
@@ -967,7 +1032,7 @@ func (plugin *mockVolumePlugin) Provision(selectedNode *v1.Node, allowedTopologi
 
 // Deleter interfaces
 
-func (plugin *mockVolumePlugin) NewDeleter(spec *vol.Spec) (vol.Deleter, error) {
+func (plugin *mockVolumePlugin) NewDeleter(spec *volume.Spec) (volume.Deleter, error) {
 	if len(plugin.deleteCalls) > 0 {
 		// mockVolumePlugin directly implements Deleter interface
 		klog.V(4).Infof("mock plugin NewDeleter called, returning mock deleter")
@@ -993,13 +1058,13 @@ func (plugin *mockVolumePlugin) GetPath() string {
 	return ""
 }
 
-func (plugin *mockVolumePlugin) GetMetrics() (*vol.Metrics, error) {
+func (plugin *mockVolumePlugin) GetMetrics() (*volume.Metrics, error) {
 	return nil, nil
 }
 
 // Recycler interfaces
 
-func (plugin *mockVolumePlugin) Recycle(pvName string, spec *vol.Spec, eventRecorder recyclerclient.RecycleEventRecorder) error {
+func (plugin *mockVolumePlugin) Recycle(pvName string, spec *volume.Spec, eventRecorder recyclerclient.RecycleEventRecorder) error {
 	if len(plugin.recycleCalls) == 0 {
 		return fmt.Errorf("Mock plugin error: no recycleCalls configured")
 	}

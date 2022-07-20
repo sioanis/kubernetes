@@ -22,7 +22,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/onsi/ginkgo"
+	"github.com/onsi/ginkgo/v2"
 	appsv1 "k8s.io/api/apps/v1"
 	v1 "k8s.io/api/core/v1"
 	discoveryv1 "k8s.io/api/discovery/v1"
@@ -35,6 +35,7 @@ import (
 	e2enode "k8s.io/kubernetes/test/e2e/framework/node"
 	"k8s.io/kubernetes/test/e2e/network/common"
 	imageutils "k8s.io/kubernetes/test/utils/image"
+	admissionapi "k8s.io/pod-security-admission/api"
 )
 
 const (
@@ -137,6 +138,7 @@ func iperf2ClientDaemonSet(client clientset.Interface, namespace string) (*appsv
 var _ = common.SIGDescribe("Networking IPerf2 [Feature:Networking-Performance]", func() {
 	// this test runs iperf2: one pod as a server, and a daemonset of clients
 	f := framework.NewDefaultFramework("network-perf")
+	f.NamespacePodSecurityEnforceLevel = admissionapi.LevelBaseline
 
 	ginkgo.It(fmt.Sprintf("should run iperf2"), func() {
 		readySchedulableNodes, err := e2enode.GetReadySchedulableNodes(f.ClientSet)

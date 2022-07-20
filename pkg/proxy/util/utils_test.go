@@ -1185,6 +1185,9 @@ func TestLineBufferWrite(t *testing.T) {
 			if want, got := testCase.expected, string(testBuffer.Bytes()); !strings.EqualFold(want, got) {
 				t.Fatalf("write word is %v\n expected: %q, got: %q", testCase.input, want, got)
 			}
+			if testBuffer.Lines() != 1 {
+				t.Fatalf("expected 1 line, got: %d", testBuffer.Lines())
+			}
 		})
 	}
 }
@@ -1267,7 +1270,7 @@ func TestWriteCountLines(t *testing.T) {
 			for i := 0; i < testCase.expected; i++ {
 				testBuffer.Write(randSeq())
 			}
-			n := CountBytesLines(testBuffer.Bytes())
+			n := testBuffer.Lines()
 			if n != testCase.expected {
 				t.Fatalf("lines expected: %d, got: %d", testCase.expected, n)
 			}
@@ -1462,6 +1465,47 @@ func TestContainsIPv4Loopback(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := ContainsIPv4Loopback(tt.cidrStrings); got != tt.want {
 				t.Errorf("ContainLoopback() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestIsZeroCIDR(t *testing.T) {
+	testCases := []struct {
+		name     string
+		input    string
+		expected bool
+	}{
+		{
+			name:     "invalide cidr",
+			input:    "",
+			expected: false,
+		},
+		{
+			name:     "ipv4 cidr",
+			input:    "172.10.0.0/16",
+			expected: false,
+		},
+		{
+			name:     "ipv4 zero cidr",
+			input:    IPv4ZeroCIDR,
+			expected: true,
+		},
+		{
+			name:     "ipv6 cidr",
+			input:    "::/128",
+			expected: false,
+		},
+		{
+			name:     "ipv6 zero cidr",
+			input:    IPv6ZeroCIDR,
+			expected: true,
+		},
+	}
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := IsZeroCIDR(tc.input); tc.expected != got {
+				t.Errorf("IsZeroCIDR() = %t, want %t", got, tc.expected)
 			}
 		})
 	}

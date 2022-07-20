@@ -26,7 +26,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	batchv1 "k8s.io/api/batch/v1"
 	v1 "k8s.io/api/core/v1"
-	storagev1beta1 "k8s.io/api/storage/v1beta1"
+	storagev1 "k8s.io/api/storage/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
@@ -37,9 +37,6 @@ import (
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes/fake"
 
-	"k8s.io/apiserver/pkg/util/feature"
-	featuregatetesting "k8s.io/component-base/featuregate/testing"
-	"k8s.io/kubernetes/pkg/features"
 	"k8s.io/kubernetes/pkg/scheduler/framework"
 	"k8s.io/kubernetes/pkg/scheduler/framework/plugins/nodeaffinity"
 	"k8s.io/kubernetes/pkg/scheduler/framework/plugins/nodename"
@@ -225,21 +222,19 @@ func TestUpdatePodInCache(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
-			schedulerCache := cache.New(ttl, ctx.Done())
-			schedulerQueue := queue.NewTestQueue(ctx, nil)
 			sched := &Scheduler{
-				SchedulerCache:  schedulerCache,
-				SchedulingQueue: schedulerQueue,
+				Cache:           cache.New(ttl, ctx.Done()),
+				SchedulingQueue: queue.NewTestQueue(ctx, nil),
 			}
 			sched.addPodToCache(tt.oldObj)
 			sched.updatePodInCache(tt.oldObj, tt.newObj)
 
 			if tt.oldObj.(*v1.Pod).UID != tt.newObj.(*v1.Pod).UID {
-				if pod, err := sched.SchedulerCache.GetPod(tt.oldObj.(*v1.Pod)); err == nil {
-					t.Errorf("Get pod UID %v from SchedulerCache but it should not happen", pod.UID)
+				if pod, err := sched.Cache.GetPod(tt.oldObj.(*v1.Pod)); err == nil {
+					t.Errorf("Get pod UID %v from cache but it should not happen", pod.UID)
 				}
 			}
-			pod, err := sched.SchedulerCache.GetPod(tt.newObj.(*v1.Pod))
+			pod, err := sched.Cache.GetPod(tt.newObj.(*v1.Pod))
 			if err != nil {
 				t.Errorf("Failed to get pod from scheduler: %v", err)
 			}
@@ -385,11 +380,11 @@ func TestAddAllEventHandlers(t *testing.T) {
 				"storage.k8s.io/CSIStorageCapacity": framework.Update,
 			},
 			expectStaticInformers: map[reflect.Type]bool{
-				reflect.TypeOf(&v1.Pod{}):                            true,
-				reflect.TypeOf(&v1.Node{}):                           true,
-				reflect.TypeOf(&v1.Namespace{}):                      true,
-				reflect.TypeOf(&v1.PersistentVolume{}):               true,
-				reflect.TypeOf(&storagev1beta1.CSIStorageCapacity{}): true,
+				reflect.TypeOf(&v1.Pod{}):                       true,
+				reflect.TypeOf(&v1.Node{}):                      true,
+				reflect.TypeOf(&v1.Namespace{}):                 true,
+				reflect.TypeOf(&v1.PersistentVolume{}):          true,
+				reflect.TypeOf(&storagev1.CSIStorageCapacity{}): true,
 			},
 			expectDynamicInformers: map[schema.GroupVersionResource]bool{},
 		},
@@ -508,7 +503,6 @@ func TestAdmissionCheck(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			defer featuregatetesting.SetFeatureGateDuringTest(t, feature.DefaultFeatureGate, features.PodOverhead, true)()
 			nodeInfo := framework.NewNodeInfo(tt.existingPods...)
 			nodeInfo.SetNode(tt.node)
 

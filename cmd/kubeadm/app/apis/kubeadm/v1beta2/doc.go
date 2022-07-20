@@ -138,7 +138,7 @@ limitations under the License.
 // The KubeProxyConfiguration type should be used to change the configuration passed to kube-proxy instances deployed
 // in the cluster. If this object is not provided or provided only partially, kubeadm applies defaults.
 //
-// See https://kubernetes.io/docs/reference/command-line-tools-reference/kube-proxy/ or https://godoc.org/k8s.io/kube-proxy/config/v1alpha1#KubeProxyConfiguration
+// See https://kubernetes.io/docs/reference/command-line-tools-reference/kube-proxy/ or https://pkg.go.dev/k8s.io/kube-proxy/config/v1alpha1#KubeProxyConfiguration
 // for kube proxy official documentation.
 //
 //    apiVersion: kubelet.config.k8s.io/v1beta1
@@ -148,7 +148,7 @@ limitations under the License.
 // The KubeletConfiguration type should be used to change the configurations that will be passed to all kubelet instances
 // deployed in the cluster. If this object is not provided or provided only partially, kubeadm applies defaults.
 //
-// See https://kubernetes.io/docs/reference/command-line-tools-reference/kubelet/ or https://godoc.org/k8s.io/kubelet/config/v1beta1#KubeletConfiguration
+// See https://kubernetes.io/docs/reference/command-line-tools-reference/kubelet/ or https://pkg.go.dev/k8s.io/kubelet/config/v1beta1#KubeletConfiguration
 // for kubelet official documentation.
 //
 // Here is a fully populated example of a single YAML file containing multiple
@@ -176,19 +176,19 @@ limitations under the License.
 // 	    effect: "NoSchedule"
 // 	  kubeletExtraArgs:
 // 	    v: 4
-//	  ignorePreflightErrors:
-//	  - IsPrivilegedUser
+// 	  ignorePreflightErrors:
+// 	  - IsPrivilegedUser
 // 	localAPIEndpoint:
 // 	  advertiseAddress: "10.100.0.1"
 // 	  bindPort: 6443
-//	certificateKey: "e6a2eb8581237ab72a4f494f30285ec12a9694d750b9785706a83bfcbbbd2204"
+// 	certificateKey: "e6a2eb8581237ab72a4f494f30285ec12a9694d750b9785706a83bfcbbbd2204"
 // 	---
 // 	apiVersion: kubeadm.k8s.io/v1beta2
 // 	kind: ClusterConfiguration
 // 	etcd:
 // 	  # one of local or external
 // 	  local:
-// 	    imageRepository: "k8s.gcr.io"
+// 	    imageRepository: "registry.k8s.io"
 // 	    imageTag: "3.2.24"
 // 	    dataDir: "/var/lib/etcd"
 // 	    extraArgs:
@@ -242,7 +242,7 @@ limitations under the License.
 // 	    readOnly: false
 // 	    pathType: File
 // 	certificatesDir: "/etc/kubernetes/pki"
-// 	imageRepository: "k8s.gcr.io"
+// 	imageRepository: "registry.k8s.io"
 // 	useHyperKubeImage: false
 // 	clusterName: "example-cluster"
 // 	---

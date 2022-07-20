@@ -472,7 +472,7 @@ type PersistentVolumeClaimSpec struct {
 	// * While DataSource ignores disallowed values (dropping them), DataSourceRef
 	//   preserves all values, and generates an error if a disallowed value is
 	//   specified.
-	// (Alpha) Using this field requires the AnyVolumeDataSource feature gate to be enabled.
+	// (Beta) Using this field requires the AnyVolumeDataSource feature gate to be enabled.
 	// +optional
 	DataSourceRef *TypedLocalObjectReference
 }
@@ -1716,11 +1716,20 @@ type CSIPersistentVolumeSource struct {
 	// ControllerExpandSecretRef is a reference to the secret object containing
 	// sensitive information to pass to the CSI driver to complete the CSI
 	// ControllerExpandVolume call.
-	// This is an alpha field and requires enabling ExpandCSIVolumes feature gate.
+	// This is an beta field and requires enabling ExpandCSIVolumes feature gate.
 	// This field is optional, and may be empty if no secret is required. If the
 	// secret object contains more than one secret, all secrets are passed.
 	// +optional
 	ControllerExpandSecretRef *SecretReference
+
+	// NodeExpandSecretRef is a reference to the secret object containing
+	// sensitive information to pass to the CSI driver to complete the CSI
+	// NodeExpandVolume call.
+	// This is an alpha field and requires enabling CSINodeExpandSecret feature gate.
+	// This field is optional, may be omitted if no secret is required. If the
+	// secret object contains more than one secret, all secrets are passed.
+	// +optional
+	NodeExpandSecretRef *SecretReference
 }
 
 // CSIVolumeSource represents a source location of a volume to mount, managed by an external CSI driver
@@ -2160,7 +2169,7 @@ type Container struct {
 	Name string
 	// Required.
 	Image string
-	// Optional: The docker image's entrypoint is used if this is not provided; cannot be updated.
+	// Optional: The container image's entrypoint is used if this is not provided; cannot be updated.
 	// Variable references $(VAR_NAME) are expanded using the container's environment.  If a variable
 	// cannot be resolved, the reference in the input string will be unchanged.  Double $$ are reduced
 	// to a single $, which allows for escaping the $(VAR_NAME) syntax: i.e. "$$(VAR_NAME)" will
@@ -2168,7 +2177,7 @@ type Container struct {
 	// of whether the variable exists or not.
 	// +optional
 	Command []string
-	// Optional: The docker image's cmd is used if this is not provided; cannot be updated.
+	// Optional: The container image's cmd is used if this is not provided; cannot be updated.
 	// Variable references $(VAR_NAME) are expanded using the container's environment.  If a variable
 	// cannot be resolved, the reference in the input string will be unchanged.  Double $$ are reduced
 	// to a single $, which allows for escaping the $(VAR_NAME) syntax: i.e. "$$(VAR_NAME)" will
@@ -2176,7 +2185,7 @@ type Container struct {
 	// of whether the variable exists or not.
 	// +optional
 	Args []string
-	// Optional: Defaults to Docker's default.
+	// Optional: Defaults to the container runtime's default working directory.
 	// +optional
 	WorkingDir string
 	// +optional
@@ -2243,7 +2252,7 @@ type ProbeHandler struct {
 	TCPSocket *TCPSocketAction
 
 	// GRPC specifies an action involving a GRPC port.
-	// This is an alpha field and requires enabling GRPCContainerProbe feature gate.
+	// This is a beta field and requires enabling GRPCContainerProbe feature gate.
 	// +featureGate=GRPCContainerProbe
 	// +optional
 	GRPC *GRPCAction
@@ -2867,8 +2876,7 @@ type PodSpec struct {
 	// +optional
 	SecurityContext *PodSecurityContext
 	// ImagePullSecrets is an optional list of references to secrets in the same namespace to use for pulling any of the images used by this PodSpec.
-	// If specified, these secrets will be passed to individual puller implementations for them to use.  For example,
-	// in the case of docker, only DockerConfig type secrets are honored.
+	// If specified, these secrets will be passed to individual puller implementations for them to use.
 	// +optional
 	ImagePullSecrets []LocalObjectReference
 	// Specifies the hostname of the Pod.
@@ -2944,7 +2952,6 @@ type PodSpec struct {
 	// set. If RuntimeClass is configured and selected in the PodSpec, Overhead will be set to the value
 	// defined in the corresponding RuntimeClass, otherwise it will remain unset and treated as zero.
 	// More info: https://git.k8s.io/enhancements/keps/sig-node/688-pod-overhead
-	// This field is beta-level as of Kubernetes v1.18, and is only honored by servers that enable the PodOverhead feature.
 	// +optional
 	Overhead ResourceList
 	// EnableServiceLinks indicates whether information about services should be injected into pod's
@@ -2985,7 +2992,6 @@ type PodSpec struct {
 	// - spec.containers[*].securityContext.runAsUser
 	// - spec.containers[*].securityContext.runAsGroup
 	// +optional
-	// This is an alpha field and requires the IdentifyPodOS feature
 	OS *PodOS
 }
 
@@ -3231,7 +3237,7 @@ type EphemeralContainerCommon struct {
 	Name string
 	// Required.
 	Image string
-	// Optional: The docker image's entrypoint is used if this is not provided; cannot be updated.
+	// Optional: The container image's entrypoint is used if this is not provided; cannot be updated.
 	// Variable references $(VAR_NAME) are expanded using the container's environment.  If a variable
 	// cannot be resolved, the reference in the input string will be unchanged.  Double $$ are reduced
 	// to a single $, which allows for escaping the $(VAR_NAME) syntax: i.e. "$$(VAR_NAME)" will
@@ -3239,7 +3245,7 @@ type EphemeralContainerCommon struct {
 	// of whether the variable exists or not.
 	// +optional
 	Command []string
-	// Optional: The docker image's cmd is used if this is not provided; cannot be updated.
+	// Optional: The container image's cmd is used if this is not provided; cannot be updated.
 	// Variable references $(VAR_NAME) are expanded using the container's environment.  If a variable
 	// cannot be resolved, the reference in the input string will be unchanged.  Double $$ are reduced
 	// to a single $, which allows for escaping the $(VAR_NAME) syntax: i.e. "$$(VAR_NAME)" will
@@ -3247,7 +3253,7 @@ type EphemeralContainerCommon struct {
 	// of whether the variable exists or not.
 	// +optional
 	Args []string
-	// Optional: Defaults to Docker's default.
+	// Optional: Defaults to the container runtime's default working directory.
 	// +optional
 	WorkingDir string
 	// Ports are not allowed for ephemeral containers.
@@ -3378,11 +3384,7 @@ type PodStatus struct {
 	// startTime set.
 	// More info: https://kubernetes.io/docs/concepts/workloads/pods/pod-lifecycle/#pod-and-container-status
 	InitContainerStatuses []ContainerStatus
-	// The list has one entry per container in the manifest. Each entry is
-	// currently the output of `docker inspect`. This output format is *not*
-	// final and should not be relied upon.
-	// TODO: Make real decisions about what our info should look like. Re-enable fuzz test
-	// when we have done this.
+	// The list has one entry per app container in the manifest.
 	// +optional
 	ContainerStatuses []ContainerStatus
 
@@ -3647,27 +3649,33 @@ const (
 	ServiceTypeExternalName ServiceType = "ExternalName"
 )
 
-// ServiceInternalTrafficPolicyType describes the type of traffic routing for
-// internal traffic
+// ServiceInternalTrafficPolicyType describes the endpoint-selection policy for
+// traffic sent to the ClusterIP.
 type ServiceInternalTrafficPolicyType string
 
 const (
-	// ServiceInternalTrafficPolicyCluster routes traffic to all endpoints
+	// ServiceInternalTrafficPolicyCluster routes traffic to all endpoints.
 	ServiceInternalTrafficPolicyCluster ServiceInternalTrafficPolicyType = "Cluster"
 
-	// ServiceInternalTrafficPolicyLocal only routes to node-local
-	// endpoints, otherwise drops the traffic
+	// ServiceInternalTrafficPolicyLocal routes traffic only to endpoints on the same
+	// node as the traffic was received on (dropping the traffic if there are no
+	// local endpoints).
 	ServiceInternalTrafficPolicyLocal ServiceInternalTrafficPolicyType = "Local"
 )
 
-// ServiceExternalTrafficPolicyType string
+// ServiceExternalTrafficPolicyType describes the endpoint-selection policy for
+// traffic to external service entrypoints (NodePorts, ExternalIPs, and
+// LoadBalancer IPs).
 type ServiceExternalTrafficPolicyType string
 
 const (
-	// ServiceExternalTrafficPolicyTypeLocal specifies node-local endpoints behavior.
-	ServiceExternalTrafficPolicyTypeLocal ServiceExternalTrafficPolicyType = "Local"
-	// ServiceExternalTrafficPolicyTypeCluster specifies cluster-wide (legacy) behavior.
+	// ServiceExternalTrafficPolicyTypeCluster routes traffic to all endpoints.
 	ServiceExternalTrafficPolicyTypeCluster ServiceExternalTrafficPolicyType = "Cluster"
+
+	// ServiceExternalTrafficPolicyTypeLocal preserves the source IP of the traffic by
+	// routing only to endpoints on the same node as the traffic was received on
+	// (dropping the traffic if there are no local endpoints).
+	ServiceExternalTrafficPolicyTypeLocal ServiceExternalTrafficPolicyType = "Local"
 )
 
 // These are the valid conditions of a service.
@@ -3727,27 +3735,27 @@ const (
 	IPv6Protocol IPFamily = "IPv6"
 )
 
-// IPFamilyPolicyType represents the dual-stack-ness requested or required by a Service
-type IPFamilyPolicyType string
+// IPFamilyPolicy represents the dual-stack-ness requested or required by a Service
+type IPFamilyPolicy string
 
 const (
 	// IPFamilyPolicySingleStack indicates that this service is required to have a single IPFamily.
 	// The IPFamily assigned is based on the default IPFamily used by the cluster
 	// or as identified by service.spec.ipFamilies field
-	IPFamilyPolicySingleStack IPFamilyPolicyType = "SingleStack"
+	IPFamilyPolicySingleStack IPFamilyPolicy = "SingleStack"
 	// IPFamilyPolicyPreferDualStack indicates that this service prefers dual-stack when
 	// the cluster is configured for dual-stack. If the cluster is not configured
 	// for dual-stack the service will be assigned a single IPFamily. If the IPFamily is not
 	// set in service.spec.ipFamilies then the service will be assigned the default IPFamily
 	// configured on the cluster
-	IPFamilyPolicyPreferDualStack IPFamilyPolicyType = "PreferDualStack"
+	IPFamilyPolicyPreferDualStack IPFamilyPolicy = "PreferDualStack"
 	// IPFamilyPolicyRequireDualStack indicates that this service requires dual-stack. Using
 	// IPFamilyPolicyRequireDualStack on a single stack cluster will result in validation errors. The
 	// IPFamilies (and their order) assigned  to this service is based on service.spec.ipFamilies. If
 	// service.spec.ipFamilies was not provided then it will be assigned according to how they are
 	// configured on the cluster. If service.spec.ipFamilies has only one entry then the alternative
 	// IPFamily will be added by apiserver
-	IPFamilyPolicyRequireDualStack IPFamilyPolicyType = "RequireDualStack"
+	IPFamilyPolicyRequireDualStack IPFamilyPolicy = "RequireDualStack"
 )
 
 // ServiceSpec describes the attributes that a user creates on a service
@@ -3820,7 +3828,7 @@ type ServiceSpec struct {
 	// to this service can be controlled by service.spec.ipFamilies and service.spec.clusterIPs
 	// respectively.
 	// +optional
-	IPFamilyPolicy *IPFamilyPolicyType
+	IPFamilyPolicy *IPFamilyPolicy
 
 	// ExternalName is the external reference that kubedns or equivalent will
 	// return as a CNAME record for this service. No proxying will be involved.
@@ -3859,12 +3867,19 @@ type ServiceSpec struct {
 	// +optional
 	LoadBalancerSourceRanges []string
 
-	// externalTrafficPolicy denotes if this Service desires to route external
-	// traffic to node-local or cluster-wide endpoints. "Local" preserves the
-	// client source IP and avoids a second hop for LoadBalancer and Nodeport
-	// type services, but risks potentially imbalanced traffic spreading.
-	// "Cluster" obscures the client source IP and may cause a second hop to
-	// another node, but should have good overall load-spreading.
+	// externalTrafficPolicy describes how nodes distribute service traffic they
+	// receive on one of the Service's "externally-facing" addresses (NodePorts,
+	// ExternalIPs, and LoadBalancer IPs). If set to "Local", the proxy will configure
+	// the service in a way that assumes that external load balancers will take care
+	// of balancing the service traffic between nodes, and so each node will deliver
+	// traffic only to the node-local endpoints of the service, without masquerading
+	// the client source IP. (Traffic mistakenly sent to a node with no endpoints will
+	// be dropped.) The default value, "Cluster", uses the standard behavior of
+	// routing to all endpoints evenly (possibly modified by topology and other
+	// features). Note that traffic sent to an External IP or LoadBalancer IP from
+	// within the cluster will always get "Cluster" semantics, but clients sending to
+	// a NodePort from within the cluster may need to take traffic policy into account
+	// when picking a node.
 	// +optional
 	ExternalTrafficPolicy ServiceExternalTrafficPolicyType
 
@@ -3911,12 +3926,12 @@ type ServiceSpec struct {
 	// +optional
 	LoadBalancerClass *string
 
-	// InternalTrafficPolicy specifies if the cluster internal traffic
-	// should be routed to all endpoints or node-local endpoints only.
-	// "Cluster" routes internal traffic to a Service to all endpoints.
-	// "Local" routes traffic to node-local endpoints only, traffic is
-	// dropped if no node-local endpoints are ready.
-	// The default value is "Cluster".
+	// InternalTrafficPolicy describes how nodes distribute service traffic they
+	// receive on the ClusterIP. If set to "Local", the proxy will assume that pods
+	// only want to talk to endpoints of the service on the same node as the pod,
+	// dropping the traffic if there are no local endpoints. The default value,
+	// "Cluster", uses the standard behavior of routing to all endpoints evenly
+	// (possibly modified by topology and other features).
 	// +featureGate=ServiceInternalTrafficPolicy
 	// +optional
 	InternalTrafficPolicy *ServiceInternalTrafficPolicyType
@@ -3988,7 +4003,10 @@ type ServiceAccount struct {
 	// +optional
 	metav1.ObjectMeta
 
-	// Secrets is the list of secrets allowed to be used by pods running using this ServiceAccount
+	// Secrets is a list of the secrets in the same namespace that pods running using this ServiceAccount are allowed to use.
+	// Pods are only limited to this list if this service account has a "kubernetes.io/enforce-mountable-secrets" annotation set to "true".
+	// This field should not be used to find auto-generated service account token secrets for use outside of pods.
+	// Instead, tokens can be requested directly using the TokenRequest API, or service account token secrets can be manually created.
 	Secrets []ObjectReference
 
 	// ImagePullSecrets is a list of references to secrets in the same namespace to use for pulling any images
@@ -5597,20 +5615,34 @@ const (
 	ScheduleAnyway UnsatisfiableConstraintAction = "ScheduleAnyway"
 )
 
+// NodeInclusionPolicy defines the type of node inclusion policy
+// +enum
+type NodeInclusionPolicy string
+
+const (
+	// NodeInclusionPolicyIgnore means ignore this scheduling directive when calculating pod topology spread skew.
+	NodeInclusionPolicyIgnore NodeInclusionPolicy = "Ignore"
+	// NodeInclusionPolicyHonor means use this scheduling directive when calculating pod topology spread skew.
+	NodeInclusionPolicyHonor NodeInclusionPolicy = "Honor"
+)
+
 // TopologySpreadConstraint specifies how to spread matching pods among the given topology.
 type TopologySpreadConstraint struct {
 	// MaxSkew describes the degree to which pods may be unevenly distributed.
 	// When `whenUnsatisfiable=DoNotSchedule`, it is the maximum permitted difference
 	// between the number of matching pods in the target topology and the global minimum.
+	// The global minimum is the minimum number of matching pods in an eligible domain
+	// or zero if the number of eligible domains is less than MinDomains.
 	// For example, in a 3-zone cluster, MaxSkew is set to 1, and pods with the same
-	// labelSelector spread as 1/1/0:
+	// labelSelector spread as 2/2/1:
+	// In this case, the global minimum is 1.
 	// +-------+-------+-------+
 	// | zone1 | zone2 | zone3 |
 	// +-------+-------+-------+
-	// |   P   |   P   |       |
+	// |  P P  |  P P  |   P   |
 	// +-------+-------+-------+
-	// - if MaxSkew is 1, incoming pod can only be scheduled to zone3 to become 1/1/1;
-	// scheduling it onto zone1(zone2) would make the ActualSkew(2-0) on zone1(zone2)
+	// - if MaxSkew is 1, incoming pod can only be scheduled to zone3 to become 2/2/2;
+	// scheduling it onto zone1(zone2) would make the ActualSkew(3-1) on zone1(zone2)
 	// violate MaxSkew(1).
 	// - if MaxSkew is 2, incoming pod can be scheduled onto any zone.
 	// When `whenUnsatisfiable=ScheduleAnyway`, it is used to give higher precedence
@@ -5621,6 +5653,11 @@ type TopologySpreadConstraint struct {
 	// and identical values are considered to be in the same topology.
 	// We consider each <key, value> as a "bucket", and try to put balanced number
 	// of pods into each bucket.
+	// We define a domain as a particular instance of a topology.
+	// Also, we define an eligible domain as a domain whose nodes meet the requirements of
+	// nodeAffinityPolicy and nodeTaintsPolicy.
+	// e.g. If TopologyKey is "kubernetes.io/hostname", each Node is a domain of that topology.
+	// And, if TopologyKey is "topology.kubernetes.io/zone", each zone is a domain of that topology.
 	// It's a required field.
 	TopologyKey string
 	// WhenUnsatisfiable indicates how to deal with a pod if it doesn't satisfy
@@ -5650,6 +5687,51 @@ type TopologySpreadConstraint struct {
 	// in their corresponding topology domain.
 	// +optional
 	LabelSelector *metav1.LabelSelector
+	// MinDomains indicates a minimum number of eligible domains.
+	// When the number of eligible domains with matching topology keys is less than minDomains,
+	// Pod Topology Spread treats "global minimum" as 0, and then the calculation of Skew is performed.
+	// And when the number of eligible domains with matching topology keys equals or greater than minDomains,
+	// this value has no effect on scheduling.
+	// As a result, when the number of eligible domains is less than minDomains,
+	// scheduler won't schedule more than maxSkew Pods to those domains.
+	// If value is nil, the constraint behaves as if MinDomains is equal to 1.
+	// Valid values are integers greater than 0.
+	// When value is not nil, WhenUnsatisfiable must be DoNotSchedule.
+	//
+	// For example, in a 3-zone cluster, MaxSkew is set to 2, MinDomains is set to 5 and pods with the same
+	// labelSelector spread as 2/2/2:
+	// +-------+-------+-------+
+	// | zone1 | zone2 | zone3 |
+	// +-------+-------+-------+
+	// |  P P  |  P P  |  P P  |
+	// +-------+-------+-------+
+	// The number of domains is less than 5(MinDomains), so "global minimum" is treated as 0.
+	// In this situation, new pod with the same labelSelector cannot be scheduled,
+	// because computed skew will be 3(3 - 0) if new Pod is scheduled to any of the three zones,
+	// it will violate MaxSkew.
+	//
+	// This is a beta field and requires the MinDomainsInPodTopologySpread feature gate to be enabled (enabled by default).
+	// +optional
+	MinDomains *int32
+	// NodeAffinityPolicy indicates how we will treat Pod's nodeAffinity/nodeSelector
+	// when calculating pod topology spread skew. Options are:
+	// - Honor: only nodes matching nodeAffinity/nodeSelector are included in the calculations.
+	// - Ignore: nodeAffinity/nodeSelector are ignored. All nodes are included in the calculations.
+	//
+	// If this value is nil, the behavior is equivalent to the Honor policy.
+	// This is a alpha-level feature enabled by the NodeInclusionPolicyInPodTopologySpread feature flag.
+	// +optional
+	NodeAffinityPolicy *NodeInclusionPolicy
+	// NodeTaintsPolicy indicates how we will treat node taints when calculating
+	// pod topology spread skew. Options are:
+	// - Honor: nodes without taints, along with tainted nodes for which the incoming pod
+	// has a toleration, are included.
+	// - Ignore: node taints are ignored. All nodes are included.
+	//
+	// If this value is nil, the behavior is equivalent to the Ignore policy.
+	// This is a alpha-level feature enabled by the NodeInclusionPolicyInPodTopologySpread feature flag.
+	// +optional
+	NodeTaintsPolicy *NodeInclusionPolicy
 }
 
 // These are the built-in errors for PortStatus.

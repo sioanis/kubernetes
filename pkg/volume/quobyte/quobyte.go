@@ -225,17 +225,10 @@ var _ volume.Mounter = &quobyteMounter{}
 
 func (mounter *quobyteMounter) GetAttributes() volume.Attributes {
 	return volume.Attributes{
-		ReadOnly:        mounter.readOnly,
-		Managed:         false,
-		SupportsSELinux: false,
+		ReadOnly:       mounter.readOnly,
+		Managed:        false,
+		SELinuxRelabel: false,
 	}
-}
-
-// Checks prior to mount operations to verify that the required components (binaries, etc.)
-// to mount the volume are available on the underlying node.
-// If not, it returns an error
-func (mounter *quobyteMounter) CanMount() error {
-	return nil
 }
 
 // SetUp attaches the disk and bind mounts to the volume path.
@@ -254,7 +247,9 @@ func (mounter *quobyteMounter) SetUpAt(dir string, mounterArgs volume.MounterArg
 		return nil
 	}
 
-	os.MkdirAll(dir, 0750)
+	if err := os.MkdirAll(dir, 0750); err != nil {
+		return err
+	}
 	var options []string
 	options = append(options, "allow-usermapping-in-volumename")
 	if mounter.readOnly {

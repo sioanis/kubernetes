@@ -45,7 +45,7 @@ GINKGO_TOLERATE_FLAKES=${GINKGO_TOLERATE_FLAKES:-n}
 # - `dlv exec` if set to "delve"
 # - `gdb` if set to "gdb"
 # NOTE: for this to work the e2e.test binary has to be compiled with
-# make WHAT=test/e2e/e2e.test GOGCFLAGS="all=-N -l" GOLDFLAGS=""
+# make DBG=1 WHAT=test/e2e/e2e.test
 E2E_TEST_DEBUG_TOOL=${E2E_TEST_DEBUG_TOOL:-}
 
 : "${KUBECTL:="${KUBE_ROOT}/cluster/kubectl.sh"}"
@@ -166,9 +166,15 @@ elif [[ "${E2E_TEST_DEBUG_TOOL}" == "gdb" ]]; then
   program=("gdb")
 fi
 
+# NOTE: Ginkgo's default timeout has been reduced from 24h to 1h in V2, set it manually here as "24h"
+# for backward compatibility purpose.
+# Set --output-interceptor-mode= none to circumvent cases where the code grabbing the stdout/stderr pipe
+# is not under the framework control and may cause hangs (https://github.com/onsi/ginkgo/issues/851)
 "${program[@]}" "${ginkgo_args[@]:+${ginkgo_args[@]}}" "${e2e_test}" -- \
   "${auth_config[@]:+${auth_config[@]}}" \
-  --ginkgo.flakeAttempts="${FLAKE_ATTEMPTS}" \
+  --ginkgo.flake-attempts="${FLAKE_ATTEMPTS}" \
+  --ginkgo.timeout="24h" \
+  --ginkgo.output-interceptor-mode=none \
   --host="${KUBE_MASTER_URL}" \
   --provider="${KUBERNETES_PROVIDER}" \
   --gce-project="${PROJECT:-}" \
@@ -188,7 +194,7 @@ fi
   --docker-config-file="${DOCKER_CONFIG_FILE:-}" \
   --dns-domain="${KUBE_DNS_DOMAIN:-cluster.local}" \
   --prepull-images="${PREPULL_IMAGES:-false}" \
-  --ginkgo.slowSpecThreshold="${GINKGO_SLOW_SPEC_THRESHOLD:-300}" \
+  --ginkgo.slow-spec-threshold="${GINKGO_SLOW_SPEC_THRESHOLD:-300s}" \
   ${MASTER_OS_DISTRIBUTION:+"--master-os-distro=${MASTER_OS_DISTRIBUTION}"} \
   ${NODE_OS_DISTRIBUTION:+"--node-os-distro=${NODE_OS_DISTRIBUTION}"} \
   ${NUM_NODES:+"--num-nodes=${NUM_NODES}"} \

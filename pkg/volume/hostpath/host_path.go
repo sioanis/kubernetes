@@ -225,17 +225,10 @@ var _ volume.Mounter = &hostPathMounter{}
 
 func (b *hostPathMounter) GetAttributes() volume.Attributes {
 	return volume.Attributes{
-		ReadOnly:        b.readOnly,
-		Managed:         false,
-		SupportsSELinux: false,
+		ReadOnly:       b.readOnly,
+		Managed:        false,
+		SELinuxRelabel: false,
 	}
-}
-
-// Checks prior to mount operations to verify that the required components (binaries, etc.)
-// to mount the volume are available on the underlying node.
-// If not, it returns an error
-func (b *hostPathMounter) CanMount() error {
-	return nil
 }
 
 // SetUp does nothing.

@@ -26,7 +26,6 @@ export DOCKER=(docker "${DOCKER_OPTS[@]}")
 DOCKER_ROOT=${DOCKER_ROOT:-""}
 ALLOW_PRIVILEGED=${ALLOW_PRIVILEGED:-""}
 DENY_SECURITY_CONTEXT_ADMISSION=${DENY_SECURITY_CONTEXT_ADMISSION:-""}
-PSP_ADMISSION=${PSP_ADMISSION:-""}
 RUNTIME_CONFIG=${RUNTIME_CONFIG:-""}
 KUBELET_AUTHORIZATION_WEBHOOK=${KUBELET_AUTHORIZATION_WEBHOOK:-""}
 KUBELET_AUTHENTICATION_WEBHOOK=${KUBELET_AUTHENTICATION_WEBHOOK:-""}
@@ -48,6 +47,17 @@ CGROUP_DRIVER=${CGROUP_DRIVER:-""}
 CGROUP_ROOT=${CGROUP_ROOT:-""}
 # owner of client certs, default to current user if not specified
 USER=${USER:-$(whoami)}
+
+# required for cni installation
+CNI_CONFIG_DIR=${CNI_CONFIG_DIR:-/etc/cni/net.d}
+CNI_PLUGINS_VERSION=${CNI_PLUGINS_VERSION:-"v1.0.1"}
+CNI_TARGETARCH=${CNI_TARGETARCH:-amd64}
+CNI_PLUGINS_TARBALL="${CNI_PLUGINS_VERSION}/cni-plugins-linux-${CNI_TARGETARCH}-${CNI_PLUGINS_VERSION}.tgz"
+CNI_PLUGINS_URL="https://github.com/containernetworking/plugins/releases/download/${CNI_PLUGINS_TARBALL}"
+CNI_PLUGINS_AMD64_SHA256SUM=${CNI_PLUGINS_AMD64_SHA256SUM:-"5238fbb2767cbf6aae736ad97a7aa29167525dcd405196dfbc064672a730d3cf"}
+CNI_PLUGINS_ARM64_SHA256SUM=${CNI_PLUGINS_ARM64_SHA256SUM:-"2d4528c45bdd0a8875f849a75082bc4eafe95cb61f9bcc10a6db38a031f67226"}
+CNI_PLUGINS_PPC64LE_SHA256SUM=${CNI_PLUGINS_PPC64LE_SHA256SUM:-"f078e33067e6daaef3a3a5010d6440f2464b7973dec3ca0b5d5be22fdcb1fd96"}
+CNI_PLUGINS_S390X_SHA256SUM=${CNI_PLUGINS_S390X_SHA256SUM:-"468d33e16440d9ca4395c6bb2d5b71b35ae4a4df26301e4da85ac70c5ce56822"}
 
 # enables testing eviction scenarios locally.
 EVICTION_HARD=${EVICTION_HARD:-"memory.available<100Mi,nodefs.available<10%,nodefs.inodesFree<5%"}
@@ -114,7 +124,7 @@ ENABLE_ADMISSION_PLUGINS=${ENABLE_ADMISSION_PLUGINS:-"NamespaceLifecycle,LimitRa
 DISABLE_ADMISSION_PLUGINS=${DISABLE_ADMISSION_PLUGINS:-""}
 ADMISSION_CONTROL_CONFIG_FILE=${ADMISSION_CONTROL_CONFIG_FILE:-""}
 
-# START_MODE can be 'all', 'kubeletonly', 'nokubelet', or 'nokubeproxy'
+# START_MODE can be 'all', 'kubeletonly', 'nokubelet', 'nokubeproxy', or 'nokubelet,nokubeproxy'
 START_MODE=${START_MODE:-"all"}
 
 # A list of controllers to enable
@@ -469,9 +479,6 @@ function start_apiserver {
     if [[ -n "${DENY_SECURITY_CONTEXT_ADMISSION}" ]]; then
       security_admission=",SecurityContextDeny"
     fi
-    if [[ -n "${PSP_ADMISSION}" ]]; then
-      security_admission=",PodSecurityPolicy"
-    fi
 
     # Append security_admission plugin
     ENABLE_ADMISSION_PLUGINS="${ENABLE_ADMISSION_PLUGINS}${security_admission}"
@@ -602,7 +609,6 @@ EOF
     if [[ -z "${AUTH_ARGS}" ]]; then
         AUTH_ARGS="--client-key=${CERT_DIR}/client-admin.key --client-certificate=${CERT_DIR}/client-admin.crt"
     fi
-
     # Grant apiserver permission to speak to the kubelet
     ${KUBECTL} --kubeconfig "${CERT_DIR}/admin.kubeconfig" create clusterrolebinding kube-apiserver-kubelet-admin --clusterrole=system:kubelet-api-admin --user=kube-apiserver
 
@@ -610,7 +616,7 @@ EOF
     ${KUBECTL} --kubeconfig "${CERT_DIR}/admin.kubeconfig" create clusterrolebinding kubelet-csr --clusterrole=system:certificates.k8s.io:certificatesigningrequests:selfnodeclient --group=system:nodes
 
     ${CONTROLPLANE_SUDO} cp "${CERT_DIR}/admin.kubeconfig" "${CERT_DIR}/admin-kube-aggregator.kubeconfig"
-    ${CONTROLPLANE_SUDO} chown "$(whoami)" "${CERT_DIR}/admin-kube-aggregator.kubeconfig"
+    ${CONTROLPLANE_SUDO} chown -R "$(whoami)" "${CERT_DIR}"
     ${KUBECTL} config set-cluster local-up-cluster --kubeconfig="${CERT_DIR}/admin-kube-aggregator.kubeconfig" --server="https://${API_HOST_IP}:31090"
     echo "use 'kubectl --kubeconfig=${CERT_DIR}/admin-kube-aggregator.kubeconfig' to use the aggregated API server"
 
@@ -826,7 +832,7 @@ EOF
 function start_kubeproxy {
     PROXY_LOG=${LOG_DIR}/kube-proxy.log
 
-    if [[ "${START_MODE}" != "nokubelet" ]]; then
+    if [[ "${START_MODE}" != *"nokubelet"* ]]; then
       # wait for kubelet collect node information
       echo "wait kubelet ready"
       wait_node_ready
@@ -929,13 +935,6 @@ function start_csi_snapshotter {
     fi
 }
 
-function create_psp_policy {
-    echo "Create podsecuritypolicy policies for RBAC."
-    ${KUBECTL} --kubeconfig="${CERT_DIR}/admin.kubeconfig" create -f "${KUBE_ROOT}/examples/podsecuritypolicy/rbac/policies.yaml"
-    ${KUBECTL} --kubeconfig="${CERT_DIR}/admin.kubeconfig" create -f "${KUBE_ROOT}/examples/podsecuritypolicy/rbac/roles.yaml"
-    ${KUBECTL} --kubeconfig="${CERT_DIR}/admin.kubeconfig" create -f "${KUBE_ROOT}/examples/podsecuritypolicy/rbac/bindings.yaml"
-}
-
 function create_storage_class {
     if [ -z "${CLOUD_PROVIDER}" ]; then
         CLASS_FILE=${KUBE_ROOT}/cluster/addons/storage-class/local/default.yaml
@@ -971,7 +970,7 @@ fi
 
 if [[ "${START_MODE}" == "all" ]]; then
   echo "  ${KUBELET_LOG}"
-elif [[ "${START_MODE}" == "nokubelet" ]]; then
+elif [[ "${START_MODE}" == *"nokubelet"* ]]; then
   echo
   echo "No kubelet was started because you set START_MODE=nokubelet"
   echo "Run this script again with START_MODE=kubeletonly to run a kubelet"
@@ -1029,6 +1028,70 @@ function parse_eviction {
   done
 }
 
+function install_cni {
+  echo "Installing CNI plugin binaries ..." \
+    && curl -sSL --retry 5 --output /tmp/cni."${CNI_TARGETARCH}".tgz "${CNI_PLUGINS_URL}" \
+    && echo "${CNI_PLUGINS_AMD64_SHA256SUM}  /tmp/cni.amd64.tgz" | tee /tmp/cni.sha256 \
+    && sha256sum --ignore-missing -c /tmp/cni.sha256 \
+    && rm -f /tmp/cni.sha256 \
+    && sudo mkdir -p /opt/cni/bin \
+    && sudo tar -C /opt/cni/bin -xzvf /tmp/cni."${CNI_TARGETARCH}".tgz \
+    && rm -rf /tmp/cni."${CNI_TARGETARCH}".tgz \
+    && sudo find /opt/cni/bin -type f -not \( \
+         -iname host-local \
+         -o -iname bridge \
+         -o -iname portmap \
+         -o -iname loopback \
+      \) \
+      -delete
+
+  # containerd 1.4.12 installed by docker in kubekins supports CNI version 0.4.0
+  echo "Configuring cni"
+  sudo mkdir -p "$CNI_CONFIG_DIR"
+  cat << EOF | sudo tee "$CNI_CONFIG_DIR"/10-containerd-net.conflist
+{
+  "cniVersion": "0.4.0",
+  "name": "containerd-net",
+  "plugins": [
+    {
+      "type": "bridge",
+      "bridge": "cni0",
+      "isGateway": true,
+      "ipMasq": true,
+      "promiscMode": true,
+      "ipam": {
+        "type": "host-local",
+        "ranges": [
+          [{
+            "subnet": "10.88.0.0/16"
+          }],
+          [{
+            "subnet": "2001:4860:4860::/64"
+          }]
+        ],
+        "routes": [
+          { "dst": "0.0.0.0/0" },
+          { "dst": "::/0" }
+        ]
+      }
+    },
+    {
+      "type": "portmap",
+      "capabilities": {"portMappings": true}
+    }
+  ]
+}
+EOF
+}
+
+function install_cni_if_needed {
+  echo "Checking CNI Installation at /opt/cni/bin"
+  if ! command -v /opt/cni/bin/loopback &> /dev/null ; then
+    echo "CNI Installation not found at /opt/cni/bin"
+    install_cni
+  fi
+}
+
 # If we are running in the CI, we need a few more things before we can start
 if [[ "${KUBETEST_IN_DOCKER:-}" == "true" ]]; then
   echo "Preparing to test ..."
@@ -1044,6 +1107,18 @@ if [[ "${KUBETEST_IN_DOCKER:-}" == "true" ]]; then
 
   # kubekins has a special directory for docker root
   DOCKER_ROOT="/docker-graph"
+
+  # to use docker installed containerd as kubelet container runtime
+  # we need to enable cri and install cni
+  # install cni for docker in docker
+  install_cni 
+
+  # enable cri for docker in docker
+  echo "enable cri"
+  echo "DOCKER_OPTS=\"\${DOCKER_OPTS} --cri-containerd\"" >> /etc/default/docker
+
+  echo "restarting docker"
+  service docker restart
 fi
 
 # validate that etcd is: not running, in path, and has minimum required version.
@@ -1086,7 +1161,7 @@ if [[ "${START_MODE}" != "kubeletonly" ]]; then
   start_csi_snapshotter
 fi
 
-if [[ "${START_MODE}" != "nokubelet" ]]; then
+if [[ "${START_MODE}" != *"nokubelet"* ]]; then
   ## TODO remove this check if/when kubelet is supported on darwin
   # Detect the OS name/arch and display appropriate error.
     case "$(uname -s)" in
@@ -1095,6 +1170,7 @@ if [[ "${START_MODE}" != "nokubelet" ]]; then
         KUBELET_LOG=""
         ;;
       Linux)
+        install_cni_if_needed
         start_kubelet
         ;;
       *)
@@ -1104,7 +1180,7 @@ if [[ "${START_MODE}" != "nokubelet" ]]; then
 fi
 
 if [[ "${START_MODE}" != "kubeletonly" ]]; then
-  if [[ "${START_MODE}" != "nokubeproxy" ]]; then
+  if [[ "${START_MODE}" != *"nokubeproxy"* ]]; then
     ## TODO remove this check if/when kubelet is supported on darwin
     # Detect the OS name/arch and display appropriate error.
     case "$(uname -s)" in
@@ -1119,10 +1195,6 @@ if [[ "${START_MODE}" != "kubeletonly" ]]; then
         ;;
     esac
   fi
-fi
-
-if [[ -n "${PSP_ADMISSION}" && "${AUTHORIZATION_MODE}" = *RBAC* ]]; then
-  create_psp_policy
 fi
 
 if [[ "${DEFAULT_STORAGE_CLASS}" = "true" ]]; then

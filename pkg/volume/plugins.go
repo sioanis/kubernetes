@@ -53,9 +53,6 @@ type ProbeEvent struct {
 	Op         ProbeOperation // The operation to the plugin
 }
 
-// CSIVolumePhaseType stores information about CSI volume path.
-type CSIVolumePhaseType string
-
 const (
 	// Common parameter which can be specified in StorageClass to specify the desired FSType
 	// Provisioners SHOULD implement support for this if they are block device based
@@ -65,8 +62,6 @@ const (
 
 	ProbeAddOrUpdate ProbeOperation = 1 << iota
 	ProbeRemove
-	CSIVolumeStaged    CSIVolumePhaseType = "staged"
-	CSIVolumePublished CSIVolumePhaseType = "published"
 )
 
 var (
@@ -124,9 +119,6 @@ type NodeResizeOptions struct {
 
 	NewSize resource.Quantity
 	OldSize resource.Quantity
-
-	// CSIVolumePhase contains volume phase on the node
-	CSIVolumePhase CSIVolumePhaseType
 }
 
 type DynamicPluginProber interface {
@@ -503,7 +495,6 @@ func (spec *Spec) IsKubeletExpandable() bool {
 		return spec.PersistentVolume.Spec.FlexVolume != nil
 	default:
 		return false
-
 	}
 }
 
@@ -671,34 +662,33 @@ func (pm *VolumePluginMgr) FindPluginBySpec(spec *Spec) (VolumePlugin, error) {
 		return nil, fmt.Errorf("could not find plugin because volume spec is nil")
 	}
 
-	matches := []VolumePlugin{}
+	var match VolumePlugin
+	matchedPluginNames := []string{}
 	for _, v := range pm.plugins {
 		if v.CanSupport(spec) {
-			matches = append(matches, v)
+			match = v
+			matchedPluginNames = append(matchedPluginNames, v.GetPluginName())
 		}
 	}
 
 	pm.refreshProbedPlugins()
 	for _, plugin := range pm.probedPlugins {
 		if plugin.CanSupport(spec) {
-			matches = append(matches, plugin)
+			match = plugin
+			matchedPluginNames = append(matchedPluginNames, plugin.GetPluginName())
 		}
 	}
 
-	if len(matches) == 0 {
+	if len(matchedPluginNames) == 0 {
 		return nil, fmt.Errorf("no volume plugin matched")
 	}
-	if len(matches) > 1 {
-		matchedPluginNames := []string{}
-		for _, plugin := range matches {
-			matchedPluginNames = append(matchedPluginNames, plugin.GetPluginName())
-		}
+	if len(matchedPluginNames) > 1 {
 		return nil, fmt.Errorf("multiple volume plugins matched: %s", strings.Join(matchedPluginNames, ","))
 	}
 
 	// Issue warning if the matched provider is deprecated
-	pm.logDeprecation(matches[0].GetPluginName())
-	return matches[0], nil
+	pm.logDeprecation(match.GetPluginName())
+	return match, nil
 }
 
 // FindPluginByName fetches a plugin by name or by legacy name.  If no plugin
@@ -1083,7 +1073,7 @@ func NewPersistentVolumeRecyclerPodTemplate() *v1.Pod {
 			Containers: []v1.Container{
 				{
 					Name:    "pv-recycler",
-					Image:   "busybox:1.27",
+					Image:   "registry.k8s.io/debian-base:v2.0.0",
 					Command: []string{"/bin/sh"},
 					Args:    []string{"-c", "test -e /scrub && rm -rf /scrub/..?* /scrub/.[!.]* /scrub/*  && test -z \"$(ls -A /scrub)\" || exit 1"},
 					VolumeMounts: []v1.VolumeMount{
