@@ -18,8 +18,10 @@ package testing
 
 import (
 	"fmt"
+	"k8s.io/klog/v2"
 	"os"
 	"path/filepath"
+	goruntime "runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -165,7 +167,8 @@ func ProbeVolumePlugins(config volume.VolumeConfig) []volume.VolumePlugin {
 // FakeVolumePlugin is useful for testing.  It tries to be a fully compliant
 // plugin, but all it does is make empty directories.
 // Use as:
-//   volume.RegisterPlugin(&FakePlugin{"fake-name"})
+//
+//	volume.RegisterPlugin(&FakePlugin{"fake-name"})
 type FakeVolumePlugin struct {
 	sync.RWMutex
 	PluginName             string
@@ -180,7 +183,9 @@ type FakeVolumePlugin struct {
 	LimitKey               string
 	ProvisionDelaySeconds  int
 	SupportsRemount        bool
+	SupportsSELinux        bool
 	DisableNodeExpansion   bool
+	CanSupportFn           func(*volume.Spec) bool
 
 	// default to false which means it is attachable by default
 	NonAttachable bool
@@ -249,9 +254,14 @@ func (plugin *FakeVolumePlugin) GetVolumeName(spec *volume.Spec) (string, error)
 	var volumeName string
 	if spec.Volume != nil && spec.Volume.GCEPersistentDisk != nil {
 		volumeName = spec.Volume.GCEPersistentDisk.PDName
+	} else if spec.Volume != nil && spec.Volume.RBD != nil {
+		volumeName = spec.Volume.RBD.RBDImage
 	} else if spec.PersistentVolume != nil &&
 		spec.PersistentVolume.Spec.GCEPersistentDisk != nil {
 		volumeName = spec.PersistentVolume.Spec.GCEPersistentDisk.PDName
+	} else if spec.PersistentVolume != nil &&
+		spec.PersistentVolume.Spec.RBD != nil {
+		volumeName = spec.PersistentVolume.Spec.RBD.RBDImage
 	} else if spec.Volume != nil && spec.Volume.CSI != nil {
 		volumeName = spec.Volume.CSI.Driver
 	}
@@ -262,7 +272,10 @@ func (plugin *FakeVolumePlugin) GetVolumeName(spec *volume.Spec) (string, error)
 }
 
 func (plugin *FakeVolumePlugin) CanSupport(spec *volume.Spec) bool {
-	// TODO: maybe pattern-match on spec.Name() to decide?
+	if plugin.CanSupportFn != nil {
+		return plugin.CanSupportFn(spec)
+	}
+
 	return true
 }
 
@@ -276,6 +289,10 @@ func (plugin *FakeVolumePlugin) SupportsMountOption() bool {
 
 func (plugin *FakeVolumePlugin) SupportsBulkVolumeVerification() bool {
 	return false
+}
+
+func (plugin *FakeVolumePlugin) SupportsSELinuxContextMount(spec *volume.Spec) (bool, error) {
+	return plugin.SupportsSELinux, nil
 }
 
 func (plugin *FakeVolumePlugin) NewMounter(spec *volume.Spec, pod *v1.Pod, opts volume.VolumeOptions) (volume.Mounter, error) {
@@ -425,11 +442,11 @@ func (plugin *FakeVolumePlugin) Recycle(pvName string, spec *volume.Spec, eventR
 	return nil
 }
 
-func (plugin *FakeVolumePlugin) NewDeleter(spec *volume.Spec) (volume.Deleter, error) {
+func (plugin *FakeVolumePlugin) NewDeleter(logger klog.Logger, spec *volume.Spec) (volume.Deleter, error) {
 	return &FakeDeleter{"/attributesTransferredFromSpec", volume.MetricsNil{}}, nil
 }
 
-func (plugin *FakeVolumePlugin) NewProvisioner(options volume.VolumeOptions) (volume.Provisioner, error) {
+func (plugin *FakeVolumePlugin) NewProvisioner(logger klog.Logger, options volume.VolumeOptions) (volume.Provisioner, error) {
 	plugin.Lock()
 	defer plugin.Unlock()
 	plugin.LastProvisionerOptions = options
@@ -440,10 +457,12 @@ func (plugin *FakeVolumePlugin) GetAccessModes() []v1.PersistentVolumeAccessMode
 	return []v1.PersistentVolumeAccessMode{}
 }
 
-func (plugin *FakeVolumePlugin) ConstructVolumeSpec(volumeName, mountPath string) (*volume.Spec, error) {
-	return &volume.Spec{
-		Volume: &v1.Volume{
-			Name: volumeName,
+func (plugin *FakeVolumePlugin) ConstructVolumeSpec(volumeName, mountPath string) (volume.ReconstructedVolume, error) {
+	return volume.ReconstructedVolume{
+		Spec: &volume.Spec{
+			Volume: &v1.Volume{
+				Name: volumeName,
+			},
 		},
 	}, nil
 }
@@ -515,7 +534,7 @@ func (f *FakeBasicVolumePlugin) CanSupport(spec *volume.Spec) bool {
 	return strings.HasPrefix(spec.Name(), f.GetPluginName())
 }
 
-func (f *FakeBasicVolumePlugin) ConstructVolumeSpec(ame, mountPath string) (*volume.Spec, error) {
+func (f *FakeBasicVolumePlugin) ConstructVolumeSpec(ame, mountPath string) (volume.ReconstructedVolume, error) {
 	return f.Plugin.ConstructVolumeSpec(ame, mountPath)
 }
 
@@ -537,6 +556,10 @@ func (f *FakeBasicVolumePlugin) RequiresRemount(spec *volume.Spec) bool {
 
 func (f *FakeBasicVolumePlugin) SupportsBulkVolumeVerification() bool {
 	return f.Plugin.SupportsBulkVolumeVerification()
+}
+
+func (f *FakeBasicVolumePlugin) SupportsSELinuxContextMount(spec *volume.Spec) (bool, error) {
+	return f.Plugin.SupportsSELinuxContextMount(spec)
 }
 
 func (f *FakeBasicVolumePlugin) SupportsMountOption() bool {
@@ -620,6 +643,10 @@ func (plugin *FakeFileVolumePlugin) SupportsBulkVolumeVerification() bool {
 	return false
 }
 
+func (plugin *FakeFileVolumePlugin) SupportsSELinuxContextMount(spec *volume.Spec) (bool, error) {
+	return false, nil
+}
+
 func (plugin *FakeFileVolumePlugin) NewMounter(spec *volume.Spec, podRef *v1.Pod, opts volume.VolumeOptions) (volume.Mounter, error) {
 	return nil, nil
 }
@@ -628,8 +655,8 @@ func (plugin *FakeFileVolumePlugin) NewUnmounter(name string, podUID types.UID) 
 	return nil, nil
 }
 
-func (plugin *FakeFileVolumePlugin) ConstructVolumeSpec(volumeName, mountPath string) (*volume.Spec, error) {
-	return nil, nil
+func (plugin *FakeFileVolumePlugin) ConstructVolumeSpec(volumeName, mountPath string) (volume.ReconstructedVolume, error) {
+	return volume.ReconstructedVolume{}, nil
 }
 
 func NewFakeFileVolumePlugin() []volume.VolumePlugin {
@@ -670,9 +697,14 @@ func getUniqueVolumeName(spec *volume.Spec) (string, error) {
 	var volumeName string
 	if spec.Volume != nil && spec.Volume.GCEPersistentDisk != nil {
 		volumeName = spec.Volume.GCEPersistentDisk.PDName
+	} else if spec.Volume != nil && spec.Volume.RBD != nil {
+		volumeName = spec.Volume.RBD.RBDImage
 	} else if spec.PersistentVolume != nil &&
 		spec.PersistentVolume.Spec.GCEPersistentDisk != nil {
 		volumeName = spec.PersistentVolume.Spec.GCEPersistentDisk.PDName
+	} else if spec.PersistentVolume != nil &&
+		spec.PersistentVolume.Spec.RBD != nil {
+		volumeName = spec.PersistentVolume.Spec.RBD.RBDImage
 	}
 	if volumeName == "" {
 		volumeName = spec.Name()
@@ -1145,7 +1177,7 @@ func (fc *FakeProvisioner) Provision(selectedNode *v1.Node, allowedTopologies []
 			return nil, fmt.Errorf("expected error")
 		}
 	}
-	fullpath := fmt.Sprintf("/tmp/hostpath_pv/%s", uuid.NewUUID())
+	fullpath := fmt.Sprintf("/%s/hostpath_pv/%s", os.TempDir(), uuid.NewUUID())
 
 	pv := &v1.PersistentVolume{
 		ObjectMeta: metav1.ObjectMeta{
@@ -1177,7 +1209,7 @@ func (fc *FakeProvisioner) Provision(selectedNode *v1.Node, allowedTopologies []
 
 var _ volumepathhandler.BlockVolumePathHandler = &FakeVolumePathHandler{}
 
-//NewDeviceHandler Create a new IoHandler implementation
+// NewDeviceHandler Create a new IoHandler implementation
 func NewBlockVolumePathHandler() volumepathhandler.BlockVolumePathHandler {
 	return &FakeVolumePathHandler{}
 }
@@ -1239,6 +1271,11 @@ func (fv *FakeVolumePathHandler) GetLoopDevice(path string) (string, error) {
 // FindEmptyDirectoryUsageOnTmpfs finds the expected usage of an empty directory existing on
 // a tmpfs filesystem on this system.
 func FindEmptyDirectoryUsageOnTmpfs() (*resource.Quantity, error) {
+	// The command below does not exist on Windows. Additionally, empty folders have size 0 on Windows.
+	if goruntime.GOOS == "windows" {
+		used, err := resource.ParseQuantity("0")
+		return &used, err
+	}
 	tmpDir, err := utiltesting.MkTmpdir("metrics_du_test")
 	if err != nil {
 		return nil, err
@@ -1485,24 +1522,6 @@ func VerifyZeroDetachCallCount(fakeVolumePlugin *FakeVolumePlugin) error {
 	return nil
 }
 
-// VerifySetUpDeviceCallCount ensures that at least one of the Mappers for this
-// plugin has the expectedSetUpDeviceCallCount number of calls. Otherwise it
-// returns an error.
-func VerifySetUpDeviceCallCount(
-	expectedSetUpDeviceCallCount int,
-	fakeVolumePlugin *FakeVolumePlugin) error {
-	for _, mapper := range fakeVolumePlugin.GetBlockVolumeMapper() {
-		actualCallCount := mapper.GetSetUpDeviceCallCount()
-		if actualCallCount >= expectedSetUpDeviceCallCount {
-			return nil
-		}
-	}
-
-	return fmt.Errorf(
-		"No Mapper have expected SetUpDeviceCallCount. Expected: <%v>.",
-		expectedSetUpDeviceCallCount)
-}
-
 // VerifyTearDownDeviceCallCount ensures that at least one of the Unmappers for this
 // plugin has the expectedTearDownDeviceCallCount number of calls. Otherwise it
 // returns an error.
@@ -1652,6 +1671,19 @@ func GetTestKubeletVolumePluginMgrWithNode(t *testing.T, node *v1.Node) (*volume
 	v := NewFakeKubeletVolumeHost(
 		t,
 		"",      /* rootDir */
+		nil,     /* kubeClient */
+		plugins, /* plugins */
+	)
+	v.WithNode(node)
+
+	return v.GetPluginMgr(), plugins[0].(*FakeVolumePlugin)
+}
+
+func GetTestKubeletVolumePluginMgrWithNodeAndRoot(t *testing.T, node *v1.Node, rootDir string) (*volume.VolumePluginMgr, *FakeVolumePlugin) {
+	plugins := ProbeVolumePlugins(volume.VolumeConfig{})
+	v := NewFakeKubeletVolumeHost(
+		t,
+		rootDir, /* rootDir */
 		nil,     /* kubeClient */
 		plugins, /* plugins */
 	)

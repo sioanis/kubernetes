@@ -25,7 +25,6 @@ import (
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/sets"
-	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/informers"
 	clientsetfake "k8s.io/client-go/kubernetes/fake"
 	extenderv1 "k8s.io/kube-scheduler/extender/v1"
@@ -279,12 +278,15 @@ func TestSchedulerWithExtenders(t *testing.T) {
 			for ii := range test.extenders {
 				extenders = append(extenders, &test.extenders[ii])
 			}
-			cache := internalcache.New(time.Duration(0), wait.NeverStop)
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+
+			cache := internalcache.New(time.Duration(0), ctx.Done())
 			for _, name := range test.nodes {
 				cache.AddNode(createNode(name))
 			}
 			fwk, err := st.NewFramework(
-				test.registerPlugins, "",
+				test.registerPlugins, "", ctx.Done(),
 				runtime.WithClientSet(client),
 				runtime.WithInformerFactory(informerFactory),
 				runtime.WithPodNominator(internalqueue.NewPodNominator(informerFactory.Core().V1().Pods().Lister())),
@@ -293,18 +295,16 @@ func TestSchedulerWithExtenders(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			scheduler := newScheduler(
-				cache,
-				extenders,
-				nil,
-				nil,
-				nil,
-				nil,
-				nil,
-				emptySnapshot,
-				schedulerapi.DefaultPercentageOfNodesToScore)
+			sched := &Scheduler{
+				Cache:                    cache,
+				nodeInfoSnapshot:         emptySnapshot,
+				percentageOfNodesToScore: schedulerapi.DefaultPercentageOfNodesToScore,
+				Extenders:                extenders,
+			}
+			sched.applyDefaultHandlers()
+
 			podIgnored := &v1.Pod{}
-			result, err := scheduler.SchedulePod(context.Background(), fwk, framework.NewCycleState(), podIgnored)
+			result, err := sched.SchedulePod(ctx, fwk, framework.NewCycleState(), podIgnored)
 			if test.expectsErr {
 				if err == nil {
 					t.Errorf("Unexpected non-error, result %+v", result)
@@ -354,9 +354,17 @@ func TestIsInterested(t *testing.T) {
 			want:     false,
 		},
 		{
-			label:    "Managed memory, container memory",
+			label:    "Managed memory, container memory with Requests",
 			extender: mem,
 			pod: st.MakePod().Req(map[v1.ResourceName]string{
+				"memory": "0",
+			}).Obj(),
+			want: true,
+		},
+		{
+			label:    "Managed memory, container memory with Limits",
+			extender: mem,
+			pod: st.MakePod().Lim(map[v1.ResourceName]string{
 				"memory": "0",
 			}).Obj(),
 			want: true,

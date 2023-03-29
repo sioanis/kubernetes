@@ -33,6 +33,8 @@ import (
 	componentbasevalidation "k8s.io/component-base/config/validation"
 	v1helper "k8s.io/kubernetes/pkg/apis/core/v1/helper"
 	"k8s.io/kubernetes/pkg/scheduler/apis/config"
+	"k8s.io/kubernetes/pkg/scheduler/apis/config/v1beta2"
+	"k8s.io/kubernetes/pkg/scheduler/apis/config/v1beta3"
 )
 
 // ValidateKubeSchedulerConfiguration ensures validation of the KubeSchedulerConfiguration struct
@@ -40,6 +42,14 @@ func ValidateKubeSchedulerConfiguration(cc *config.KubeSchedulerConfiguration) u
 	var errs []error
 	errs = append(errs, componentbasevalidation.ValidateClientConnectionConfiguration(&cc.ClientConnection, field.NewPath("clientConnection")).ToAggregate())
 	errs = append(errs, componentbasevalidation.ValidateLeaderElectionConfiguration(&cc.LeaderElection, field.NewPath("leaderElection")).ToAggregate())
+
+	// TODO: This can be removed when ResourceLock is not available
+	// Only ResourceLock values with leases are allowed
+	if cc.LeaderElection.LeaderElect && cc.LeaderElection.ResourceLock != "leases" {
+		leaderElectionPath := field.NewPath("leaderElection")
+		errs = append(errs, field.Invalid(leaderElectionPath.Child("resourceLock"), cc.LeaderElection.ResourceLock, `resourceLock value must be "leases"`))
+	}
+
 	profilesPath := field.NewPath("profiles")
 	if cc.Parallelism <= 0 {
 		errs = append(errs, field.Invalid(field.NewPath("parallelism"), cc.Parallelism, "should be an integer value greater than zero"))
@@ -86,10 +96,9 @@ func ValidateKubeSchedulerConfiguration(cc *config.KubeSchedulerConfiguration) u
 			}
 		}
 	}
-	if cc.PercentageOfNodesToScore < 0 || cc.PercentageOfNodesToScore > 100 {
-		errs = append(errs, field.Invalid(field.NewPath("percentageOfNodesToScore"),
-			cc.PercentageOfNodesToScore, "not in valid range [0-100]"))
-	}
+
+	errs = append(errs, validatePercentageOfNodesToScore(field.NewPath("percentageOfNodesToScore"), cc.PercentageOfNodesToScore))
+
 	if cc.PodInitialBackoffSeconds <= 0 {
 		errs = append(errs, field.Invalid(field.NewPath("podInitialBackoffSeconds"),
 			cc.PodInitialBackoffSeconds, "must be greater than 0"))
@@ -115,11 +124,70 @@ func splitHostIntPort(s string) (string, int, error) {
 	return host, portInt, err
 }
 
+func validatePercentageOfNodesToScore(path *field.Path, percentageOfNodesToScore *int32) error {
+	if percentageOfNodesToScore != nil {
+		if *percentageOfNodesToScore < 0 || *percentageOfNodesToScore > 100 {
+			return field.Invalid(path, *percentageOfNodesToScore, "not in valid range [0-100]")
+		}
+	}
+	return nil
+}
+
+type invalidPlugins struct {
+	schemeGroupVersion string
+	plugins            []string
+}
+
+// invalidPluginsByVersion maintains a list of removed/deprecated plugins in each version.
+// Remember to add an entry to that list when creating a new component config
+// version (even if the list of invalid plugins is empty).
+var invalidPluginsByVersion = []invalidPlugins{
+	{
+		schemeGroupVersion: v1beta2.SchemeGroupVersion.String(),
+		plugins:            []string{},
+	},
+	{
+		schemeGroupVersion: v1beta3.SchemeGroupVersion.String(),
+		plugins:            []string{},
+	},
+	{
+		schemeGroupVersion: v1.SchemeGroupVersion.String(),
+		plugins:            []string{"SelectorSpread"},
+	},
+}
+
+// isPluginInvalid checks if a given plugin was removed/deprecated in the given component
+// config version or earlier.
+func isPluginInvalid(apiVersion string, name string) (bool, string) {
+	for _, dp := range invalidPluginsByVersion {
+		for _, plugin := range dp.plugins {
+			if name == plugin {
+				return true, dp.schemeGroupVersion
+			}
+		}
+		if apiVersion == dp.schemeGroupVersion {
+			break
+		}
+	}
+	return false, ""
+}
+
+func validatePluginSetForInvalidPlugins(path *field.Path, apiVersion string, ps config.PluginSet) []error {
+	var errs []error
+	for i, plugin := range ps.Enabled {
+		if invalid, invalidVersion := isPluginInvalid(apiVersion, plugin.Name); invalid {
+			errs = append(errs, field.Invalid(path.Child("enabled").Index(i), plugin.Name, fmt.Sprintf("was invalid in version %q (KubeSchedulerConfiguration is version %q)", invalidVersion, apiVersion)))
+		}
+	}
+	return errs
+}
+
 func validateKubeSchedulerProfile(path *field.Path, apiVersion string, profile *config.KubeSchedulerProfile) []error {
 	var errs []error
 	if len(profile.SchedulerName) == 0 {
 		errs = append(errs, field.Required(path.Child("schedulerName"), ""))
 	}
+	errs = append(errs, validatePercentageOfNodesToScore(path.Child("percentageOfNodesToScore"), profile.PercentageOfNodesToScore))
 	errs = append(errs, validatePluginConfig(path, apiVersion, profile)...)
 	return errs
 }
@@ -136,6 +204,29 @@ func validatePluginConfig(path *field.Path, apiVersion string, profile *config.K
 		"VolumeBinding":                   ValidateVolumeBindingArgs,
 	}
 
+	if profile.Plugins != nil {
+		stagesToPluginSet := map[string]config.PluginSet{
+			"preEnqueue": profile.Plugins.PreEnqueue,
+			"queueSort":  profile.Plugins.QueueSort,
+			"preFilter":  profile.Plugins.PreFilter,
+			"filter":     profile.Plugins.Filter,
+			"postFilter": profile.Plugins.PostFilter,
+			"preScore":   profile.Plugins.PreScore,
+			"score":      profile.Plugins.Score,
+			"reserve":    profile.Plugins.Reserve,
+			"permit":     profile.Plugins.Permit,
+			"preBind":    profile.Plugins.PreBind,
+			"bind":       profile.Plugins.Bind,
+			"postBind":   profile.Plugins.PostBind,
+		}
+
+		pluginsPath := path.Child("plugins")
+		for s, p := range stagesToPluginSet {
+			errs = append(errs, validatePluginSetForInvalidPlugins(
+				pluginsPath.Child(s), apiVersion, p)...)
+		}
+	}
+
 	seenPluginConfig := make(sets.String)
 
 	for i := range profile.PluginConfig {
@@ -147,7 +238,9 @@ func validatePluginConfig(path *field.Path, apiVersion string, profile *config.K
 		} else {
 			seenPluginConfig.Insert(name)
 		}
-		if validateFunc, ok := m[name]; ok {
+		if invalid, invalidVersion := isPluginInvalid(apiVersion, name); invalid {
+			errs = append(errs, field.Invalid(pluginConfigPath, name, fmt.Sprintf("was invalid in version %q (KubeSchedulerConfiguration is version %q)", invalidVersion, apiVersion)))
+		} else if validateFunc, ok := m[name]; ok {
 			// type mismatch, no need to validate the `args`.
 			if reflect.TypeOf(args) != reflect.ValueOf(validateFunc).Type().In(1) {
 				errs = append(errs, field.Invalid(pluginConfigPath.Child("args"), args, "has to match plugin args"))

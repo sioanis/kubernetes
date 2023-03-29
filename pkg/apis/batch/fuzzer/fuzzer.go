@@ -20,6 +20,7 @@ import (
 	fuzz "github.com/google/gofuzz"
 	runtimeserializer "k8s.io/apimachinery/pkg/runtime/serializer"
 	"k8s.io/kubernetes/pkg/apis/batch"
+	api "k8s.io/kubernetes/pkg/apis/core"
 	"k8s.io/utils/pointer"
 )
 
@@ -43,7 +44,7 @@ var Funcs = func(codecs runtimeserializer.CodecFactory) []interface{} {
 			j.Parallelism = &parallelism
 			j.BackoffLimit = &backoffLimit
 			if c.Rand.Int31()%2 == 0 {
-				j.ManualSelector = pointer.BoolPtr(true)
+				j.ManualSelector = pointer.Bool(true)
 			} else {
 				j.ManualSelector = nil
 			}
@@ -54,7 +55,7 @@ var Funcs = func(codecs runtimeserializer.CodecFactory) []interface{} {
 			j.CompletionMode = &mode
 			// We're fuzzing the internal JobSpec type, not the v1 type, so we don't
 			// need to fuzz the nil value.
-			j.Suspend = pointer.BoolPtr(c.RandBool())
+			j.Suspend = pointer.Bool(c.RandBool())
 		},
 		func(sj *batch.CronJobSpec, c fuzz.Continue) {
 			c.FuzzNoCustom(sj)
@@ -71,6 +72,12 @@ var Funcs = func(codecs runtimeserializer.CodecFactory) []interface{} {
 		func(cp *batch.ConcurrencyPolicy, c fuzz.Continue) {
 			policies := []batch.ConcurrencyPolicy{batch.AllowConcurrent, batch.ForbidConcurrent, batch.ReplaceConcurrent}
 			*cp = policies[c.Rand.Intn(len(policies))]
+		},
+		func(p *batch.PodFailurePolicyOnPodConditionsPattern, c fuzz.Continue) {
+			c.FuzzNoCustom(p)
+			if p.Status == "" {
+				p.Status = api.ConditionTrue
+			}
 		},
 	}
 }

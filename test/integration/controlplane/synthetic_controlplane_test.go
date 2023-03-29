@@ -39,20 +39,11 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/wait"
-	authauthenticator "k8s.io/apiserver/pkg/authentication/authenticator"
-	"k8s.io/apiserver/pkg/authentication/group"
-	"k8s.io/apiserver/pkg/authentication/request/bearertoken"
-	authenticatorunion "k8s.io/apiserver/pkg/authentication/request/union"
-	"k8s.io/apiserver/pkg/authentication/user"
-	"k8s.io/apiserver/pkg/authorization/authorizer"
-	"k8s.io/apiserver/pkg/authorization/authorizerfactory"
-	"k8s.io/apiserver/plugin/pkg/authenticator/token/tokentest"
 	clientset "k8s.io/client-go/kubernetes"
 	clienttypedv1 "k8s.io/client-go/kubernetes/typed/core/v1"
 	restclient "k8s.io/client-go/rest"
 	"k8s.io/kubernetes/cmd/kube-apiserver/app/options"
 	kubeapiservertesting "k8s.io/kubernetes/cmd/kube-apiserver/app/testing"
-	"k8s.io/kubernetes/pkg/controlplane"
 	"k8s.io/kubernetes/test/integration"
 	"k8s.io/kubernetes/test/integration/framework"
 )
@@ -62,15 +53,6 @@ const (
 	AliceToken string = "abc123" // username: alice.  Present in token file.
 	BobToken   string = "xyz987" // username: bob.  Present in token file.
 )
-
-type allowAliceAuthorizer struct{}
-
-func (allowAliceAuthorizer) Authorize(ctx context.Context, a authorizer.Attributes) (authorizer.Decision, string, error) {
-	if a.GetUser() != nil && a.GetUser().GetName() == "alice" {
-		return authorizer.DecisionAllow, "", nil
-	}
-	return authorizer.DecisionNoOpinion, "I can't allow that.  Go ask alice.", nil
-}
 
 func testPrefix(t *testing.T, prefix string) {
 	server := kubeapiservertesting.StartTestServerOrDie(t, nil, nil, framework.SharedEtcd())
@@ -163,68 +145,54 @@ func TestEmptyList(t *testing.T) {
 	}
 }
 
-func initStatusForbiddenControlPlaneConfig(config *controlplane.Config) {
-	config.GenericConfig.Authentication.Authenticator = authenticatorunion.New(
-		authauthenticator.RequestFunc(func(req *http.Request) (*authauthenticator.Response, bool, error) {
-			return &authauthenticator.Response{
-				User: &user.DefaultInfo{
-					Name:   "unprivileged",
-					Groups: []string{user.AllAuthenticated},
-				},
-			}, true, nil
-		}))
-	config.GenericConfig.Authorization.Authorizer = authorizerfactory.NewAlwaysDenyAuthorizer()
+func initStatusForbiddenControlPlaneConfig(options *options.ServerRunOptions) {
+	options.Authorization.Modes = []string{"AlwaysDeny"}
 }
 
-func initUnauthorizedControlPlaneConfig(config *controlplane.Config) {
-	tokenAuthenticator := tokentest.New()
-	tokenAuthenticator.Tokens[AliceToken] = &user.DefaultInfo{Name: "alice", UID: "1"}
-	tokenAuthenticator.Tokens[BobToken] = &user.DefaultInfo{Name: "bob", UID: "2"}
-	config.GenericConfig.Authentication.Authenticator = group.NewGroupAdder(bearertoken.New(tokenAuthenticator), []string{user.AllAuthenticated})
-	config.GenericConfig.Authorization.Authorizer = allowAliceAuthorizer{}
+func initUnauthorizedControlPlaneConfig(options *options.ServerRunOptions) {
+	options.Authentication.Anonymous.Allow = false
 }
 
 func TestStatus(t *testing.T) {
 	testCases := []struct {
-		name         string
-		modifyConfig func(*controlplane.Config)
-		statusCode   int
-		reqPath      string
-		reason       string
-		message      string
+		name          string
+		modifyOptions func(*options.ServerRunOptions)
+		statusCode    int
+		reqPath       string
+		reason        string
+		message       string
 	}{
 		{
-			name:         "404",
-			modifyConfig: nil,
-			statusCode:   http.StatusNotFound,
-			reqPath:      "/apis/batch/v1/namespaces/default/jobs/foo",
-			reason:       "NotFound",
-			message:      `jobs.batch "foo" not found`,
+			name:       "404",
+			statusCode: http.StatusNotFound,
+			reqPath:    "/apis/batch/v1/namespaces/default/jobs/foo",
+			reason:     "NotFound",
+			message:    `jobs.batch "foo" not found`,
 		},
 		{
-			name:         "403",
-			modifyConfig: initStatusForbiddenControlPlaneConfig,
-			statusCode:   http.StatusForbidden,
-			reqPath:      "/apis",
-			reason:       "Forbidden",
-			message:      `forbidden: User "unprivileged" cannot get path "/apis": Everything is forbidden.`,
+			name:          "403",
+			modifyOptions: initStatusForbiddenControlPlaneConfig,
+			statusCode:    http.StatusForbidden,
+			reqPath:       "/apis",
+			reason:        "Forbidden",
+			message:       `forbidden: User "system:anonymous" cannot get path "/apis": Everything is forbidden.`,
 		},
 		{
-			name:         "401",
-			modifyConfig: initUnauthorizedControlPlaneConfig,
-			statusCode:   http.StatusUnauthorized,
-			reqPath:      "/apis",
-			reason:       "Unauthorized",
-			message:      `Unauthorized`,
+			name:          "401",
+			modifyOptions: initUnauthorizedControlPlaneConfig,
+			statusCode:    http.StatusUnauthorized,
+			reqPath:       "/apis",
+			reason:        "Unauthorized",
+			message:       `Unauthorized`,
 		},
 	}
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			_, kubeConfig, tearDownFn := framework.StartTestServer(t, framework.TestServerSetup{
-				ModifyServerConfig: func(config *controlplane.Config) {
-					if tc.modifyConfig != nil {
-						tc.modifyConfig(config)
+				ModifyServerRunOptions: func(options *options.ServerRunOptions) {
+					if tc.modifyOptions != nil {
+						tc.modifyOptions(options)
 					}
 				},
 			})
@@ -232,7 +200,7 @@ func TestStatus(t *testing.T) {
 
 			// When modifying authenticator and authorizer, don't use
 			// bearer token than will be always authorized.
-			if tc.modifyConfig != nil {
+			if tc.modifyOptions != nil {
 				kubeConfig.BearerToken = ""
 			}
 			transport, err := restclient.TransportFor(kubeConfig)
@@ -724,77 +692,6 @@ func TestAPIServerService(t *testing.T) {
 	})
 	if err != nil {
 		t.Errorf("unexpected error: %v", err)
-	}
-}
-
-func TestServiceAlloc(t *testing.T) {
-	// Create an IPv4 single stack control-plane
-	serviceCIDR := "192.168.0.0/29"
-
-	client, _, tearDownFn := framework.StartTestServer(t, framework.TestServerSetup{
-		ModifyServerRunOptions: func(opts *options.ServerRunOptions) {
-			opts.ServiceClusterIPRanges = serviceCIDR
-		},
-	})
-	defer tearDownFn()
-
-	svc := func(i int) *corev1.Service {
-		return &corev1.Service{
-			ObjectMeta: metav1.ObjectMeta{
-				Name: fmt.Sprintf("svc-%v", i),
-			},
-			Spec: corev1.ServiceSpec{
-				Type: corev1.ServiceTypeClusterIP,
-				Ports: []corev1.ServicePort{
-					{Port: 80},
-				},
-			},
-		}
-	}
-
-	// Wait until the default "kubernetes" service is created.
-	if err := wait.Poll(250*time.Millisecond, time.Minute, func() (bool, error) {
-		_, err := client.CoreV1().Services(metav1.NamespaceDefault).Get(context.TODO(), "kubernetes", metav1.GetOptions{})
-		if err != nil && !apierrors.IsNotFound(err) {
-			return false, err
-		}
-		return !apierrors.IsNotFound(err), nil
-	}); err != nil {
-		t.Fatalf("creating kubernetes service timed out")
-	}
-
-	// make 5 more services to take up all IPs
-	for i := 0; i < 5; i++ {
-		if _, err := client.CoreV1().Services(metav1.NamespaceDefault).Create(context.TODO(), svc(i), metav1.CreateOptions{}); err != nil {
-			t.Error(err)
-		}
-	}
-
-	// Make another service. It will fail because we're out of cluster IPs
-	if _, err := client.CoreV1().Services(metav1.NamespaceDefault).Create(context.TODO(), svc(8), metav1.CreateOptions{}); err != nil {
-		if !strings.Contains(err.Error(), "range is full") {
-			t.Errorf("unexpected error text: %v", err)
-		}
-	} else {
-		svcs, err := client.CoreV1().Services(metav1.NamespaceAll).List(context.TODO(), metav1.ListOptions{})
-		if err != nil {
-			t.Fatalf("unexpected success, and error getting the services: %v", err)
-		}
-		allIPs := []string{}
-		for _, s := range svcs.Items {
-			allIPs = append(allIPs, s.Spec.ClusterIP)
-		}
-		t.Fatalf("unexpected creation success. The following IPs exist: %#v. It should only be possible to allocate 2 IP addresses in this cluster.\n\n%#v", allIPs, svcs)
-	}
-
-	// Delete the first service.
-	if err := client.CoreV1().Services(metav1.NamespaceDefault).Delete(context.TODO(), svc(1).ObjectMeta.Name, metav1.DeleteOptions{}); err != nil {
-		t.Fatalf("got unexpected error: %v", err)
-	}
-
-	// This time creating the second service should work.
-	if _, err := client.CoreV1().Services(metav1.NamespaceDefault).Create(context.TODO(), svc(8), metav1.CreateOptions{}); err != nil {
-		t.Fatalf("got unexpected error: %v", err)
 	}
 }
 

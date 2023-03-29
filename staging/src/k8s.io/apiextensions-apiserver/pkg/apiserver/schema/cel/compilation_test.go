@@ -22,8 +22,12 @@ import (
 	"strings"
 	"testing"
 
+	"k8s.io/apiserver/pkg/cel"
+
 	apiextensions "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	"k8s.io/apiextensions-apiserver/pkg/apiserver/schema"
+	"k8s.io/apiextensions-apiserver/pkg/apiserver/schema/cel/model"
+	celconfig "k8s.io/apiserver/pkg/apis/cel"
 )
 
 const (
@@ -78,12 +82,12 @@ func (m fnMatcher) String() string {
 }
 
 type errorMatcher struct {
-	errorType ErrorType
+	errorType cel.ErrorType
 	contains  string
 }
 
 func invalidError(contains string) validationMatcher {
-	return errorMatcher{errorType: ErrorTypeInvalid, contains: contains}
+	return errorMatcher{errorType: cel.ErrorTypeInvalid, contains: contains}
 }
 
 func (v errorMatcher) matches(cr CompilationResult) bool {
@@ -92,6 +96,22 @@ func (v errorMatcher) matches(cr CompilationResult) bool {
 
 func (v errorMatcher) String() string {
 	return fmt.Sprintf("has error of type %q containing string %q", v.errorType, v.contains)
+}
+
+type messageExpressionErrorMatcher struct {
+	contains string
+}
+
+func messageExpressionError(contains string) validationMatcher {
+	return messageExpressionErrorMatcher{contains: contains}
+}
+
+func (m messageExpressionErrorMatcher) matches(cr CompilationResult) bool {
+	return cr.MessageExpressionError != nil && cr.MessageExpressionError.Type == cel.ErrorTypeInvalid && strings.Contains(cr.MessageExpressionError.Error(), m.contains)
+}
+
+func (m messageExpressionErrorMatcher) String() string {
+	return fmt.Sprintf("has messageExpression error containing string %q", m.contains)
 }
 
 type noErrorMatcher struct{}
@@ -638,11 +658,68 @@ func TestCelCompilation(t *testing.T) {
 				invalidError("must evaluate to a bool"),
 			},
 		},
+		{
+			name: "messageExpression inclusion",
+			input: schema.Structural{
+				Generic: schema.Generic{
+					Type: "string",
+				},
+				Extensions: schema.Extensions{
+					XValidations: apiextensions.ValidationRules{
+						{
+							Rule:              "self.startsWith('s')",
+							MessageExpression: `"scoped field should start with 's'"`,
+						},
+					},
+				},
+			},
+			expectedResults: []validationMatcher{
+				noError(),
+			},
+		},
+		{
+			name: "messageExpression must evaluate to a string",
+			input: schema.Structural{
+				Generic: schema.Generic{
+					Type: "integer",
+				},
+				Extensions: schema.Extensions{
+					XValidations: apiextensions.ValidationRules{
+						{
+							Rule:              "self == 5",
+							MessageExpression: `42`,
+						},
+					},
+				},
+			},
+			expectedResults: []validationMatcher{
+				messageExpressionError("must evaluate to a string"),
+			},
+		},
+		{
+			name: "messageExpression syntax error",
+			input: schema.Structural{
+				Generic: schema.Generic{
+					Type: "number",
+				},
+				Extensions: schema.Extensions{
+					XValidations: apiextensions.ValidationRules{
+						{
+							Rule:              "self < 32.0",
+							MessageExpression: `"abc`,
+						},
+					},
+				},
+			},
+			expectedResults: []validationMatcher{
+				messageExpressionError("messageExpression compilation failed"),
+			},
+		},
 	}
 
 	for _, tt := range cases {
 		t.Run(tt.name, func(t *testing.T) {
-			compilationResults, err := Compile(&tt.input, false, PerCallLimit)
+			compilationResults, err := Compile(&tt.input, model.SchemaDeclType(&tt.input, false), celconfig.PerCallLimit)
 			if err != nil {
 				t.Errorf("Expected no error, but got: %v", err)
 			}
@@ -1078,7 +1155,7 @@ func genMapWithCustomItemRule(item *schema.Structural, rule string) func(maxProp
 // if expectedCostExceedsLimit is non-zero. Typically, only expectedCost or expectedCostExceedsLimit is non-zero, not both.
 func schemaChecker(schema *schema.Structural, expectedCost uint64, expectedCostExceedsLimit uint64, t *testing.T) func(t *testing.T) {
 	return func(t *testing.T) {
-		compilationResults, err := Compile(schema, false, PerCallLimit)
+		compilationResults, err := Compile(schema, model.SchemaDeclType(schema, false), celconfig.PerCallLimit)
 		if err != nil {
 			t.Errorf("Expected no error, got: %v", err)
 		}
@@ -1592,6 +1669,27 @@ func TestCostEstimation(t *testing.T) {
 			setMaxElements:   10,
 			expectedSetCost:  6,
 		},
+		{
+			name:             "check cost of size call",
+			schemaGenerator:  genMapWithRule("integer", "oldSelf.size() == self.size()"),
+			expectedCalcCost: 5,
+			setMaxElements:   10,
+			expectedSetCost:  5,
+		},
+		{
+			name:             "check cost of timestamp comparison",
+			schemaGenerator:  genMapWithRule("date-time", `self["a"] == self["b"]`),
+			expectedCalcCost: 8,
+			setMaxElements:   7,
+			expectedSetCost:  8,
+		},
+		{
+			name:             "check cost of duration comparison",
+			schemaGenerator:  genMapWithRule("duration", `self["c"] == self["d"]`),
+			expectedCalcCost: 8,
+			setMaxElements:   42,
+			expectedSetCost:  8,
+		},
 	}
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {
@@ -1614,7 +1712,7 @@ func BenchmarkCompile(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_, err := Compile(s, false, uint64(math.MaxInt64))
+		_, err := Compile(s, model.SchemaDeclType(s, false), uint64(math.MaxInt64))
 		if err != nil {
 			b.Fatal(err)
 		}

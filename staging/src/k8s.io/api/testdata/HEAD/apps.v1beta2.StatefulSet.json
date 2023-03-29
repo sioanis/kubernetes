@@ -453,7 +453,12 @@
                     },
                     "requests": {
                       "requestsKey": "0"
-                    }
+                    },
+                    "claims": [
+                      {
+                        "name": "nameValue"
+                      }
+                    ]
                   },
                   "volumeName": "volumeNameValue",
                   "storageClassName": "storageClassNameValue",
@@ -466,7 +471,8 @@
                   "dataSourceRef": {
                     "apiGroup": "apiGroupValue",
                     "kind": "kindValue",
-                    "name": "nameValue"
+                    "name": "nameValue",
+                    "namespace": "namespaceValue"
                   }
                 }
               }
@@ -539,8 +545,19 @@
               },
               "requests": {
                 "requestsKey": "0"
-              }
+              },
+              "claims": [
+                {
+                  "name": "nameValue"
+                }
+              ]
             },
+            "resizePolicy": [
+              {
+                "resourceName": "resourceNameValue",
+                "restartPolicy": "restartPolicyValue"
+              }
+            ],
             "volumeMounts": [
               {
                 "name": "nameValue",
@@ -811,8 +828,19 @@
               },
               "requests": {
                 "requestsKey": "0"
-              }
+              },
+              "claims": [
+                {
+                  "name": "nameValue"
+                }
+              ]
             },
+            "resizePolicy": [
+              {
+                "resourceName": "resourceNameValue",
+                "restartPolicy": "restartPolicyValue"
+              }
+            ],
             "volumeMounts": [
               {
                 "name": "nameValue",
@@ -1083,8 +1111,19 @@
               },
               "requests": {
                 "requestsKey": "0"
-              }
+              },
+              "claims": [
+                {
+                  "name": "nameValue"
+                }
+              ]
             },
+            "resizePolicy": [
+              {
+                "resourceName": "resourceNameValue",
+                "restartPolicy": "restartPolicyValue"
+              }
+            ],
             "volumeMounts": [
               {
                 "name": "nameValue",
@@ -1617,13 +1656,31 @@
             },
             "minDomains": 5,
             "nodeAffinityPolicy": "nodeAffinityPolicyValue",
-            "nodeTaintsPolicy": "nodeTaintsPolicyValue"
+            "nodeTaintsPolicy": "nodeTaintsPolicyValue",
+            "matchLabelKeys": [
+              "matchLabelKeysValue"
+            ]
           }
         ],
         "setHostnameAsFQDN": true,
         "os": {
           "name": "nameValue"
-        }
+        },
+        "hostUsers": true,
+        "schedulingGates": [
+          {
+            "name": "nameValue"
+          }
+        ],
+        "resourceClaims": [
+          {
+            "name": "nameValue",
+            "source": {
+              "resourceClaimName": "resourceClaimNameValue",
+              "resourceClaimTemplateName": "resourceClaimTemplateNameValue"
+            }
+          }
+        ]
       }
     },
     "volumeClaimTemplates": [
@@ -1694,7 +1751,12 @@
             },
             "requests": {
               "requestsKey": "0"
-            }
+            },
+            "claims": [
+              {
+                "name": "nameValue"
+              }
+            ]
           },
           "volumeName": "volumeNameValue",
           "storageClassName": "storageClassNameValue",
@@ -1707,7 +1769,8 @@
           "dataSourceRef": {
             "apiGroup": "apiGroupValue",
             "kind": "kindValue",
-            "name": "nameValue"
+            "name": "nameValue",
+            "namespace": "namespaceValue"
           }
         },
         "status": {
@@ -1749,6 +1812,9 @@
     "persistentVolumeClaimRetentionPolicy": {
       "whenDeleted": "whenDeletedValue",
       "whenScaled": "whenScaledValue"
+    },
+    "ordinals": {
+      "start": 1
     }
   },
   "status": {

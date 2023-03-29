@@ -19,7 +19,7 @@ package test
 // ZaprOutputMappingDirect provides a mapping from klog output to the
 // corresponding zapr output when zapr is called directly.
 //
-// Experimental
+// # Experimental
 //
 // Notice: This package is EXPERIMENTAL and may be changed or removed in a
 // later release.
@@ -73,11 +73,7 @@ func ZaprOutputMappingDirect() map[string]string {
 `: `{"caller":"test/output.go:<LINE>","msg":"test","v":0,"pods":[{"name":"pod-1","namespace":"kube-system"},{"name":"pod-2","namespace":"kube-system"}]}
 `,
 
-		`I output.go:<LINE>] "test" pods="[kube-system/pod-1 kube-system/pod-2]"
-`: `{"caller":"test/output.go:<LINE>","msg":"test","v":0,"pods":[{"name":"pod-1","namespace":"kube-system"},{"name":"pod-2","namespace":"kube-system"}]}
-`,
-
-		`I output.go:<LINE>] "test" pods="[]"
+		`I output.go:<LINE>] "test" pods=[]
 `: `{"caller":"test/output.go:<LINE>","msg":"test","v":0,"pods":null}
 `,
 
@@ -85,11 +81,11 @@ func ZaprOutputMappingDirect() map[string]string {
 `: `{"caller":"test/output.go:<LINE>","msg":"test","v":0,"pods":"<KObjSlice needs a slice, got type int>"}
 `,
 
-		`I output.go:<LINE>] "test" ints="<KObjSlice needs a slice of values implementing KMetadata, got type int>"
+		`I output.go:<LINE>] "test" ints=[<KObjSlice needs a slice of values implementing KMetadata, got type int>]
 `: `{"caller":"test/output.go:<LINE>","msg":"test","v":0,"ints":"<KObjSlice needs a slice of values implementing KMetadata, got type int>"}
 `,
 
-		`I output.go:<LINE>] "test" pods="[kube-system/pod-1 <nil>]"
+		`I output.go:<LINE>] "test" pods=[kube-system/pod-1 <nil>]
 `: `{"caller":"test/output.go:<LINE>","msg":"test","v":0,"pods":[{"name":"pod-1","namespace":"kube-system"},null]}
 `,
 
@@ -140,7 +136,7 @@ I output.go:<LINE>] "odd WithValues" keyWithoutValue="(MISSING)"
 {"caller":"test/output.go:<LINE>","msg":"both odd","basekey1":"basevar1","v":0,"akey":"avalue"}
 `,
 
-		`I output.go:<LINE>] "marshaler nil" obj="<panic: value method k8s.io/klog/v2.ObjectRef.String called using nil *ObjectRef pointer>"
+		`I output.go:<LINE>] "marshaler nil" obj="<panic: value method k8s.io/klog/v2.ObjectRef.WriteText called using nil *ObjectRef pointer>"
 `: `{"caller":"test/output.go:<LINE>","msg":"marshaler nil","v":0,"objError":"PANIC=value method k8s.io/klog/v2.ObjectRef.MarshalLog called using nil *ObjectRef pointer"}
 `,
 
@@ -241,18 +237,18 @@ I output.go:<LINE>] "odd WithValues" keyWithoutValue="(MISSING)"
 // klog.
 //
 // This is different from ZaprOutputMappingDirect because:
-// - WithName gets added to the message by Output.
-// - zap uses . as separator instead of / between WithName values,
-//   here we get slashes because Output concatenates these values.
-// - WithValues are added to the normal key/value parameters by
-//   Output, which puts them after "v".
-// - Output does that without emitting the warning that we get
-//   from zapr.
-// - zap drops keys with missing values, here we get "(MISSING)".
-// - zap does not de-duplicate key/value pairs, here klog does that
-//   for it.
+//   - WithName gets added to the message by Output.
+//   - zap uses . as separator instead of / between WithName values,
+//     here we get slashes because Output concatenates these values.
+//   - WithValues are added to the normal key/value parameters by
+//     Output, which puts them after "v".
+//   - Output does that without emitting the warning that we get
+//     from zapr.
+//   - zap drops keys with missing values, here we get "(MISSING)".
+//   - zap does not de-duplicate key/value pairs, here klog does that
+//     for it.
 //
-// Experimental
+// # Experimental
 //
 // Notice: This package is EXPERIMENTAL and may be changed or removed in a
 // later release.
@@ -319,6 +315,11 @@ I output.go:<LINE>] "test" firstKey=1 secondKey=3
 `: `{"caller":"test/output.go:<LINE>","msg":"non-string key argument passed to logging, ignoring all later arguments","invalid key":{"test":true}}
 {"caller":"test/output.go:<LINE>","msg":"map keys","v":0}
 `,
+
+		// zapr does not support vmodule checks and thus always
+		// discards these messages.
+		`I output.go:<LINE>] "v=11: you see me because of -vmodule output=11"
+`: ``,
 	} {
 		mapping[key] = value
 	}

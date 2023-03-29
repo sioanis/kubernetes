@@ -47,6 +47,26 @@
     "parallelism": 1,
     "completions": 2,
     "activeDeadlineSeconds": 3,
+    "podFailurePolicy": {
+      "rules": [
+        {
+          "action": "actionValue",
+          "onExitCodes": {
+            "containerName": "containerNameValue",
+            "operator": "operatorValue",
+            "values": [
+              3
+            ]
+          },
+          "onPodConditions": [
+            {
+              "type": "typeValue",
+              "status": "statusValue"
+            }
+          ]
+        }
+      ]
+    },
     "backoffLimit": 7,
     "selector": {
       "matchLabels": {
@@ -457,7 +477,12 @@
                     },
                     "requests": {
                       "requestsKey": "0"
-                    }
+                    },
+                    "claims": [
+                      {
+                        "name": "nameValue"
+                      }
+                    ]
                   },
                   "volumeName": "volumeNameValue",
                   "storageClassName": "storageClassNameValue",
@@ -470,7 +495,8 @@
                   "dataSourceRef": {
                     "apiGroup": "apiGroupValue",
                     "kind": "kindValue",
-                    "name": "nameValue"
+                    "name": "nameValue",
+                    "namespace": "namespaceValue"
                   }
                 }
               }
@@ -543,8 +569,19 @@
               },
               "requests": {
                 "requestsKey": "0"
-              }
+              },
+              "claims": [
+                {
+                  "name": "nameValue"
+                }
+              ]
             },
+            "resizePolicy": [
+              {
+                "resourceName": "resourceNameValue",
+                "restartPolicy": "restartPolicyValue"
+              }
+            ],
             "volumeMounts": [
               {
                 "name": "nameValue",
@@ -815,8 +852,19 @@
               },
               "requests": {
                 "requestsKey": "0"
-              }
+              },
+              "claims": [
+                {
+                  "name": "nameValue"
+                }
+              ]
             },
+            "resizePolicy": [
+              {
+                "resourceName": "resourceNameValue",
+                "restartPolicy": "restartPolicyValue"
+              }
+            ],
             "volumeMounts": [
               {
                 "name": "nameValue",
@@ -1087,8 +1135,19 @@
               },
               "requests": {
                 "requestsKey": "0"
-              }
+              },
+              "claims": [
+                {
+                  "name": "nameValue"
+                }
+              ]
             },
+            "resizePolicy": [
+              {
+                "resourceName": "resourceNameValue",
+                "restartPolicy": "restartPolicyValue"
+              }
+            ],
             "volumeMounts": [
               {
                 "name": "nameValue",
@@ -1621,13 +1680,31 @@
             },
             "minDomains": 5,
             "nodeAffinityPolicy": "nodeAffinityPolicyValue",
-            "nodeTaintsPolicy": "nodeTaintsPolicyValue"
+            "nodeTaintsPolicy": "nodeTaintsPolicyValue",
+            "matchLabelKeys": [
+              "matchLabelKeysValue"
+            ]
           }
         ],
         "setHostnameAsFQDN": true,
         "os": {
           "name": "nameValue"
-        }
+        },
+        "hostUsers": true,
+        "schedulingGates": [
+          {
+            "name": "nameValue"
+          }
+        ],
+        "resourceClaims": [
+          {
+            "name": "nameValue",
+            "source": {
+              "resourceClaimName": "resourceClaimNameValue",
+              "resourceClaimTemplateName": "resourceClaimTemplateNameValue"
+            }
+          }
+        ]
       }
     },
     "ttlSecondsAfterFinished": 8,

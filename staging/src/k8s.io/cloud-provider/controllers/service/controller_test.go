@@ -26,6 +26,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
 	v1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -35,6 +36,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/apimachinery/pkg/util/sets"
+	utilfeature "k8s.io/apiserver/pkg/util/feature"
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes/fake"
 	"k8s.io/client-go/kubernetes/scheme"
@@ -44,9 +46,11 @@ import (
 	"k8s.io/client-go/util/workqueue"
 	fakecloud "k8s.io/cloud-provider/fake"
 	servicehelper "k8s.io/cloud-provider/service/helpers"
-	utilpointer "k8s.io/utils/pointer"
+	featuregatetesting "k8s.io/component-base/featuregate/testing"
+	"k8s.io/controller-manager/pkg/features"
+	_ "k8s.io/controller-manager/pkg/features/register"
 
-	"github.com/stretchr/testify/assert"
+	utilpointer "k8s.io/utils/pointer"
 )
 
 const region = "us-central"
@@ -64,7 +68,21 @@ func newService(name string, uid types.UID, serviceType v1.ServiceType) *v1.Serv
 	}
 }
 
-//Wrap newService so that you don't have to call default arguments again and again.
+func newETPLocalService(name string, serviceType v1.ServiceType) *v1.Service {
+	return &v1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: "default",
+			UID:       "777",
+		},
+		Spec: v1.ServiceSpec{
+			Type:                  serviceType,
+			ExternalTrafficPolicy: v1.ServiceExternalTrafficPolicyLocal,
+		},
+	}
+}
+
+// Wrap newService so that you don't have to call default arguments again and again.
 func defaultExternalService() *v1.Service {
 	return newService("external-balancer", types.UID("123"), v1.ServiceTypeLoadBalancer)
 }
@@ -86,7 +104,6 @@ func newController() (*Controller, *fakecloud.Cloud, *fake.Clientset) {
 
 	controller := &Controller{
 		cloud:            cloud,
-		knownHosts:       []*v1.Node{},
 		kubeClient:       kubeClient,
 		clusterName:      "test-cluster",
 		cache:            &serviceCache{serviceMap: make(map[string]*cachedService)},
@@ -94,8 +111,9 @@ func newController() (*Controller, *fakecloud.Cloud, *fake.Clientset) {
 		eventRecorder:    recorder,
 		nodeLister:       newFakeNodeLister(nil),
 		nodeListerSynced: nodeInformer.Informer().HasSynced,
-		queue:            workqueue.NewNamedRateLimitingQueue(workqueue.NewItemExponentialFailureRateLimiter(minRetryDelay, maxRetryDelay), "service"),
-		nodeSyncCh:       make(chan interface{}, 1),
+		serviceQueue:     workqueue.NewNamedRateLimitingQueue(workqueue.NewItemExponentialFailureRateLimiter(minRetryDelay, maxRetryDelay), "service"),
+		nodeQueue:        workqueue.NewNamedRateLimitingQueue(workqueue.NewItemExponentialFailureRateLimiter(minRetryDelay, maxRetryDelay), "node"),
+		lastSyncedNodes:  []*v1.Node{},
 	}
 
 	balancer, _ := cloud.LoadBalancer()
@@ -550,7 +568,6 @@ func TestUpdateNodesInExternalLoadBalancer(t *testing.T) {
 			defer cancel()
 			controller, cloud, _ := newController()
 			controller.nodeLister = newFakeNodeLister(nil, nodes...)
-
 			if servicesToRetry := controller.updateLoadBalancerHosts(ctx, item.services, item.workers); len(servicesToRetry) != 0 {
 				t.Errorf("for case %q, unexpected servicesToRetry: %v", item.desc, servicesToRetry)
 			}
@@ -559,10 +576,366 @@ func TestUpdateNodesInExternalLoadBalancer(t *testing.T) {
 	}
 }
 
+func TestNodeChangesForExternalTrafficPolicyLocalServices(t *testing.T) {
+	defer featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.StableLoadBalancerNodeSet, false)()
+	node1 := makeNode(tweakName("node1"), tweakSetCondition(v1.NodeReady, v1.ConditionTrue))
+	node2 := makeNode(tweakName("node2"), tweakSetCondition(v1.NodeReady, v1.ConditionTrue))
+	node3 := makeNode(tweakName("node3"), tweakSetCondition(v1.NodeReady, v1.ConditionTrue))
+	node2NotReady := makeNode(tweakName("node2"), tweakSetCondition(v1.NodeReady, v1.ConditionFalse))
+	node2Tainted := makeNode(tweakName("node2"), tweakAddTaint(ToBeDeletedTaint), tweakSetCondition(v1.NodeReady, v1.ConditionTrue))
+	node2SpuriousChange := makeNode(tweakName("node2"), tweakAddTaint("Other"), tweakSetCondition(v1.NodeReady, v1.ConditionTrue))
+	node2Exclude := makeNode(tweakName("node2"), tweakSetLabel(v1.LabelNodeExcludeBalancers, ""), tweakSetCondition(v1.NodeReady, v1.ConditionTrue))
+
+	type stateChanges struct {
+		nodes       []*v1.Node
+		syncCallErr bool
+	}
+
+	etpLocalservice1 := newETPLocalService("s0", v1.ServiceTypeLoadBalancer)
+	etpLocalservice2 := newETPLocalService("s1", v1.ServiceTypeLoadBalancer)
+	service3 := defaultExternalService()
+
+	services := []*v1.Service{etpLocalservice1, etpLocalservice2, service3}
+
+	for _, tc := range []struct {
+		desc                string
+		expectedUpdateCalls []fakecloud.UpdateBalancerCall
+		stateChanges        []stateChanges
+		initialState        []*v1.Node
+	}{
+		{
+			desc:         "No node changes",
+			initialState: []*v1.Node{node1, node2, node3},
+			stateChanges: []stateChanges{
+				{
+					nodes: []*v1.Node{node1, node2, node3},
+				},
+			},
+			expectedUpdateCalls: []fakecloud.UpdateBalancerCall{},
+		},
+		{
+			desc:         "1 new node gets added",
+			initialState: []*v1.Node{node1, node2},
+			stateChanges: []stateChanges{
+				{
+					nodes: []*v1.Node{node1, node2, node3},
+				},
+			},
+			expectedUpdateCalls: []fakecloud.UpdateBalancerCall{
+				{Service: etpLocalservice1, Hosts: []*v1.Node{node1, node2, node3}},
+				{Service: etpLocalservice2, Hosts: []*v1.Node{node1, node2, node3}},
+				{Service: service3, Hosts: []*v1.Node{node1, node2, node3}},
+			},
+		},
+		{
+			desc:         "1 new node gets added - with retries",
+			initialState: []*v1.Node{node1, node2},
+			stateChanges: []stateChanges{
+				{
+					nodes:       []*v1.Node{node1, node2, node3},
+					syncCallErr: true,
+				},
+				{
+					nodes: []*v1.Node{node1, node2, node3},
+				},
+			},
+			expectedUpdateCalls: []fakecloud.UpdateBalancerCall{
+				{Service: etpLocalservice1, Hosts: []*v1.Node{node1, node2, node3}},
+				{Service: etpLocalservice2, Hosts: []*v1.Node{node1, node2, node3}},
+				{Service: service3, Hosts: []*v1.Node{node1, node2, node3}},
+			},
+		},
+		{
+			desc:         "1 node goes NotReady",
+			initialState: []*v1.Node{node1, node2, node3},
+			stateChanges: []stateChanges{
+				{
+					nodes: []*v1.Node{node1, node2NotReady, node3},
+				},
+			},
+			expectedUpdateCalls: []fakecloud.UpdateBalancerCall{
+				{Service: service3, Hosts: []*v1.Node{node1, node3}},
+			},
+		},
+		{
+			desc:         "1 node gets Tainted",
+			initialState: []*v1.Node{node1, node2, node3},
+			stateChanges: []stateChanges{
+				{
+					nodes: []*v1.Node{node1, node2Tainted, node3},
+				},
+			},
+			expectedUpdateCalls: []fakecloud.UpdateBalancerCall{
+				{Service: etpLocalservice1, Hosts: []*v1.Node{node1, node3}},
+				{Service: etpLocalservice2, Hosts: []*v1.Node{node1, node3}},
+				{Service: service3, Hosts: []*v1.Node{node1, node3}},
+			},
+		},
+		{
+			desc:         "1 node goes Ready",
+			initialState: []*v1.Node{node1, node2NotReady, node3},
+			stateChanges: []stateChanges{
+				{
+					nodes: []*v1.Node{node1, node2, node3},
+				},
+			},
+			expectedUpdateCalls: []fakecloud.UpdateBalancerCall{
+				{Service: service3, Hosts: []*v1.Node{node1, node2, node3}},
+			},
+		},
+		{
+			desc:         "1 node get excluded",
+			initialState: []*v1.Node{node1, node2, node3},
+			stateChanges: []stateChanges{
+				{
+					nodes: []*v1.Node{node1, node2Exclude, node3},
+				},
+			},
+			expectedUpdateCalls: []fakecloud.UpdateBalancerCall{
+				{Service: etpLocalservice1, Hosts: []*v1.Node{node1, node3}},
+				{Service: etpLocalservice2, Hosts: []*v1.Node{node1, node3}},
+				{Service: service3, Hosts: []*v1.Node{node1, node3}},
+			},
+		},
+		{
+			desc:         "1 old node gets deleted",
+			initialState: []*v1.Node{node1, node2, node3},
+			stateChanges: []stateChanges{
+				{
+					nodes: []*v1.Node{node1, node2},
+				},
+			},
+			expectedUpdateCalls: []fakecloud.UpdateBalancerCall{
+				{Service: etpLocalservice1, Hosts: []*v1.Node{node1, node2}},
+				{Service: etpLocalservice2, Hosts: []*v1.Node{node1, node2}},
+				{Service: service3, Hosts: []*v1.Node{node1, node2}},
+			},
+		},
+		{
+			desc:         "1 spurious node update",
+			initialState: []*v1.Node{node1, node2, node3},
+			stateChanges: []stateChanges{
+				{
+					nodes: []*v1.Node{node1, node2SpuriousChange, node3},
+				},
+			},
+			expectedUpdateCalls: []fakecloud.UpdateBalancerCall{},
+		},
+	} {
+		t.Run(tc.desc, func(t *testing.T) {
+			controller, cloud, _ := newController()
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+
+			controller.lastSyncedNodes = tc.initialState
+
+			for _, state := range tc.stateChanges {
+				setupState := func() {
+					controller.nodeLister = newFakeNodeLister(nil, state.nodes...)
+					if state.syncCallErr {
+						cloud.Err = fmt.Errorf("error please")
+					}
+				}
+				cleanupState := func() {
+					cloud.Err = nil
+				}
+				setupState()
+				controller.updateLoadBalancerHosts(ctx, services, 3)
+				cleanupState()
+			}
+
+			compareUpdateCalls(t, tc.expectedUpdateCalls, cloud.UpdateCalls)
+		})
+	}
+}
+
+func TestNodeChangesForStableNodeSetEnabled(t *testing.T) {
+	node1 := makeNode(tweakName("node1"), tweakSetCondition(v1.NodeReady, v1.ConditionTrue))
+	node2 := makeNode(tweakName("node2"), tweakSetCondition(v1.NodeReady, v1.ConditionTrue))
+	node3 := makeNode(tweakName("node3"), tweakSetCondition(v1.NodeReady, v1.ConditionTrue))
+	node2NotReady := makeNode(tweakName("node2"), tweakSetCondition(v1.NodeReady, v1.ConditionFalse))
+	node2Tainted := makeNode(tweakName("node2"), tweakAddTaint(ToBeDeletedTaint), tweakSetCondition(v1.NodeReady, v1.ConditionTrue))
+	node2SpuriousChange := makeNode(tweakName("node2"), tweakAddTaint("Other"), tweakSetCondition(v1.NodeReady, v1.ConditionTrue))
+	node2Exclude := makeNode(tweakName("node2"), tweakSetLabel(v1.LabelNodeExcludeBalancers, ""), tweakSetCondition(v1.NodeReady, v1.ConditionTrue))
+	node2Deleted := makeNode(tweakName("node2"), tweakDeleted())
+
+	type stateChanges struct {
+		nodes       []*v1.Node
+		syncCallErr bool
+	}
+
+	etpLocalservice1 := newETPLocalService("s0", v1.ServiceTypeLoadBalancer)
+	etpLocalservice2 := newETPLocalService("s1", v1.ServiceTypeLoadBalancer)
+	service3 := defaultExternalService()
+
+	services := []*v1.Service{etpLocalservice1, etpLocalservice2, service3}
+
+	for _, tc := range []struct {
+		desc                string
+		expectedUpdateCalls []fakecloud.UpdateBalancerCall
+		stateChanges        []stateChanges
+		initialState        []*v1.Node
+	}{
+		{
+			desc:         "No node changes",
+			initialState: []*v1.Node{node1, node2, node3},
+			stateChanges: []stateChanges{
+				{
+					nodes: []*v1.Node{node1, node2, node3},
+				},
+			},
+			expectedUpdateCalls: []fakecloud.UpdateBalancerCall{},
+		},
+		{
+			desc:         "1 new node gets added",
+			initialState: []*v1.Node{node1, node2},
+			stateChanges: []stateChanges{
+				{
+					nodes: []*v1.Node{node1, node2, node3},
+				},
+			},
+			expectedUpdateCalls: []fakecloud.UpdateBalancerCall{
+				{Service: etpLocalservice1, Hosts: []*v1.Node{node1, node2, node3}},
+				{Service: etpLocalservice2, Hosts: []*v1.Node{node1, node2, node3}},
+				{Service: service3, Hosts: []*v1.Node{node1, node2, node3}},
+			},
+		},
+		{
+			desc:         "1 new node gets added - with retries",
+			initialState: []*v1.Node{node1, node2},
+			stateChanges: []stateChanges{
+				{
+					nodes:       []*v1.Node{node1, node2, node3},
+					syncCallErr: true,
+				},
+				{
+					nodes: []*v1.Node{node1, node2, node3},
+				},
+			},
+			expectedUpdateCalls: []fakecloud.UpdateBalancerCall{
+				{Service: etpLocalservice1, Hosts: []*v1.Node{node1, node2, node3}},
+				{Service: etpLocalservice2, Hosts: []*v1.Node{node1, node2, node3}},
+				{Service: service3, Hosts: []*v1.Node{node1, node2, node3}},
+			},
+		},
+		{
+			desc:         "1 node goes NotReady",
+			initialState: []*v1.Node{node1, node2, node3},
+			stateChanges: []stateChanges{
+				{
+					nodes: []*v1.Node{node1, node2NotReady, node3},
+				},
+			},
+			expectedUpdateCalls: []fakecloud.UpdateBalancerCall{},
+		},
+		{
+			desc:         "1 node gets Tainted",
+			initialState: []*v1.Node{node1, node2, node3},
+			stateChanges: []stateChanges{
+				{
+					nodes: []*v1.Node{node1, node2Tainted, node3},
+				},
+			},
+			expectedUpdateCalls: []fakecloud.UpdateBalancerCall{
+				{Service: etpLocalservice1, Hosts: []*v1.Node{node1, node3}},
+				{Service: etpLocalservice2, Hosts: []*v1.Node{node1, node3}},
+				{Service: service3, Hosts: []*v1.Node{node1, node3}},
+			},
+		},
+		{
+			desc:         "1 node goes Ready",
+			initialState: []*v1.Node{node1, node2NotReady, node3},
+			stateChanges: []stateChanges{
+				{
+					nodes: []*v1.Node{node1, node2, node3},
+				},
+			},
+			expectedUpdateCalls: []fakecloud.UpdateBalancerCall{},
+		},
+		{
+			desc:         "1 node get excluded",
+			initialState: []*v1.Node{node1, node2, node3},
+			stateChanges: []stateChanges{
+				{
+					nodes: []*v1.Node{node1, node2Exclude, node3},
+				},
+			},
+			expectedUpdateCalls: []fakecloud.UpdateBalancerCall{
+				{Service: etpLocalservice1, Hosts: []*v1.Node{node1, node3}},
+				{Service: etpLocalservice2, Hosts: []*v1.Node{node1, node3}},
+				{Service: service3, Hosts: []*v1.Node{node1, node3}},
+			},
+		},
+		{
+			desc:         "1 old node gets deleted",
+			initialState: []*v1.Node{node1, node2, node3},
+			stateChanges: []stateChanges{
+				{
+					nodes: []*v1.Node{node1, node2},
+				},
+			},
+			expectedUpdateCalls: []fakecloud.UpdateBalancerCall{
+				{Service: etpLocalservice1, Hosts: []*v1.Node{node1, node2}},
+				{Service: etpLocalservice2, Hosts: []*v1.Node{node1, node2}},
+				{Service: service3, Hosts: []*v1.Node{node1, node2}},
+			},
+		},
+		{
+			desc:         "1 node marked for deletion",
+			initialState: []*v1.Node{node1, node2, node3},
+			stateChanges: []stateChanges{
+				{
+					nodes: []*v1.Node{node1, node2Deleted, node3},
+				},
+			},
+			expectedUpdateCalls: []fakecloud.UpdateBalancerCall{
+				{Service: etpLocalservice1, Hosts: []*v1.Node{node1, node3}},
+				{Service: etpLocalservice2, Hosts: []*v1.Node{node1, node3}},
+				{Service: service3, Hosts: []*v1.Node{node1, node3}},
+			},
+		},
+		{
+			desc:         "1 spurious node update",
+			initialState: []*v1.Node{node1, node2, node3},
+			stateChanges: []stateChanges{
+				{
+					nodes: []*v1.Node{node1, node2SpuriousChange, node3},
+				},
+			},
+			expectedUpdateCalls: []fakecloud.UpdateBalancerCall{},
+		},
+	} {
+		t.Run(tc.desc, func(t *testing.T) {
+			controller, cloud, _ := newController()
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+
+			controller.lastSyncedNodes = tc.initialState
+
+			for _, state := range tc.stateChanges {
+				setupState := func() {
+					controller.nodeLister = newFakeNodeLister(nil, state.nodes...)
+					if state.syncCallErr {
+						cloud.Err = fmt.Errorf("error please")
+					}
+				}
+				cleanupState := func() {
+					cloud.Err = nil
+				}
+				setupState()
+				controller.updateLoadBalancerHosts(ctx, services, 3)
+				cleanupState()
+			}
+
+			compareUpdateCalls(t, tc.expectedUpdateCalls, cloud.UpdateCalls)
+		})
+	}
+}
+
 func TestNodeChangesInExternalLoadBalancer(t *testing.T) {
-	node1 := &v1.Node{ObjectMeta: metav1.ObjectMeta{Name: "node0"}, Status: v1.NodeStatus{Conditions: []v1.NodeCondition{{Type: v1.NodeReady, Status: v1.ConditionTrue}}}}
-	node2 := &v1.Node{ObjectMeta: metav1.ObjectMeta{Name: "node1"}, Status: v1.NodeStatus{Conditions: []v1.NodeCondition{{Type: v1.NodeReady, Status: v1.ConditionTrue}}}}
-	node3 := &v1.Node{ObjectMeta: metav1.ObjectMeta{Name: "node73"}, Status: v1.NodeStatus{Conditions: []v1.NodeCondition{{Type: v1.NodeReady, Status: v1.ConditionTrue}}}}
+	node1 := &v1.Node{ObjectMeta: metav1.ObjectMeta{Name: "node1"}, Status: v1.NodeStatus{Conditions: []v1.NodeCondition{{Type: v1.NodeReady, Status: v1.ConditionTrue}}}}
+	node2 := &v1.Node{ObjectMeta: metav1.ObjectMeta{Name: "node2"}, Status: v1.NodeStatus{Conditions: []v1.NodeCondition{{Type: v1.NodeReady, Status: v1.ConditionTrue}}}}
+	node3 := &v1.Node{ObjectMeta: metav1.ObjectMeta{Name: "node3"}, Status: v1.NodeStatus{Conditions: []v1.NodeCondition{{Type: v1.NodeReady, Status: v1.ConditionTrue}}}}
 	node4 := &v1.Node{ObjectMeta: metav1.ObjectMeta{Name: "node4"}, Status: v1.NodeStatus{Conditions: []v1.NodeCondition{{Type: v1.NodeReady, Status: v1.ConditionTrue}}}}
 
 	services := []*v1.Service{
@@ -720,7 +1093,7 @@ func TestProcessServiceCreateOrUpdate(t *testing.T) {
 				cachedServiceTest.state = svc
 				controller.cache.set(keyExpected, cachedServiceTest)
 
-				keyGot, quit := controller.queue.Get()
+				keyGot, quit := controller.serviceQueue.Get()
 				if quit {
 					t.Fatalf("get no queue element")
 				}
@@ -996,14 +1369,15 @@ func TestProcessServiceDeletion(t *testing.T) {
 
 // Test cases:
 // index    finalizer    timestamp    wantLB  |  clean-up
-//   0         0           0            0     |   false    (No finalizer, no clean up)
-//   1         0           0            1     |   false    (Ignored as same with case 0)
-//   2         0           1            0     |   false    (Ignored as same with case 0)
-//   3         0           1            1     |   false    (Ignored as same with case 0)
-//   4         1           0            0     |   true
-//   5         1           0            1     |   false
-//   6         1           1            0     |   true    (Service is deleted, needs clean up)
-//   7         1           1            1     |   true    (Ignored as same with case 6)
+//
+//	0         0           0            0     |   false    (No finalizer, no clean up)
+//	1         0           0            1     |   false    (Ignored as same with case 0)
+//	2         0           1            0     |   false    (Ignored as same with case 0)
+//	3         0           1            1     |   false    (Ignored as same with case 0)
+//	4         1           0            0     |   true
+//	5         1           0            1     |   false
+//	6         1           1            0     |   true    (Service is deleted, needs clean up)
+//	7         1           1            1     |   true    (Ignored as same with case 6)
 func TestNeedsCleanup(t *testing.T) {
 	testCases := []struct {
 		desc               string
@@ -1148,7 +1522,7 @@ func TestNeedsUpdate(t *testing.T) {
 			updateFn: func() {
 				oldSvc = defaultExternalService()
 				newSvc = defaultExternalService()
-				newSvc.Spec.ExternalTrafficPolicy = v1.ServiceExternalTrafficPolicyTypeLocal
+				newSvc.Spec.ExternalTrafficPolicy = v1.ServiceExternalTrafficPolicyLocal
 			},
 			expectedNeedsUpdate: true,
 		},
@@ -1205,6 +1579,75 @@ func TestNeedsUpdate(t *testing.T) {
 			},
 			expectedNeedsUpdate: true,
 		},
+		{
+			testName: "If appProtocol is the same",
+			updateFn: func() {
+				oldSvc = &v1.Service{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "tcp-service",
+						Namespace: "default",
+					},
+					Spec: v1.ServiceSpec{
+						Ports: []v1.ServicePort{{
+							Port:       80,
+							Protocol:   v1.ProtocolTCP,
+							TargetPort: intstr.Parse("22"),
+						}},
+						Type: v1.ServiceTypeLoadBalancer,
+					},
+				}
+				newSvc = oldSvc.DeepCopy()
+			},
+			expectedNeedsUpdate: false,
+		},
+		{
+			testName: "If appProtocol is set when previously unset",
+			updateFn: func() {
+				oldSvc = &v1.Service{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "tcp-service",
+						Namespace: "default",
+					},
+					Spec: v1.ServiceSpec{
+						Ports: []v1.ServicePort{{
+							Port:       80,
+							Protocol:   v1.ProtocolTCP,
+							TargetPort: intstr.Parse("22"),
+						}},
+						Type: v1.ServiceTypeLoadBalancer,
+					},
+				}
+				newSvc = oldSvc.DeepCopy()
+				protocol := "http"
+				newSvc.Spec.Ports[0].AppProtocol = &protocol
+			},
+			expectedNeedsUpdate: true,
+		},
+		{
+			testName: "If appProtocol is set to a different value",
+			updateFn: func() {
+				protocol := "http"
+				oldSvc = &v1.Service{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "tcp-service",
+						Namespace: "default",
+					},
+					Spec: v1.ServiceSpec{
+						Ports: []v1.ServicePort{{
+							Port:        80,
+							Protocol:    v1.ProtocolTCP,
+							TargetPort:  intstr.Parse("22"),
+							AppProtocol: &protocol,
+						}},
+						Type: v1.ServiceTypeLoadBalancer,
+					},
+				}
+				newSvc = oldSvc.DeepCopy()
+				newProtocol := "tcp"
+				newSvc.Spec.Ports[0].AppProtocol = &newProtocol
+			},
+			expectedNeedsUpdate: true,
+		},
 	}
 
 	controller, _, _ := newController()
@@ -1217,10 +1660,10 @@ func TestNeedsUpdate(t *testing.T) {
 	}
 }
 
-//All the test cases for ServiceCache uses a single cache, these below test cases should be run in order,
-//as tc1 (addCache would add elements to the cache)
-//and tc2 (delCache would remove element from the cache without it adding automatically)
-//Please keep this in mind while adding new test cases.
+// All the test cases for ServiceCache uses a single cache, these below test cases should be run in order,
+// as tc1 (addCache would add elements to the cache)
+// and tc2 (delCache would remove element from the cache without it adding automatically)
+// Please keep this in mind while adding new test cases.
 func TestServiceCache(t *testing.T) {
 
 	//ServiceCache a common service cache for all the test cases
@@ -1324,28 +1767,6 @@ func TestServiceCache(t *testing.T) {
 		if err := tc.checkCacheFn(); err != nil {
 			t.Errorf("%v returned %v", tc.testName, err)
 		}
-	}
-}
-
-//Test a utility functions as it's not easy to unit test nodeSyncInternal directly
-func TestNodeSlicesEqualForLB(t *testing.T) {
-	numNodes := 10
-	nArray := make([]*v1.Node, numNodes)
-	mArray := make([]*v1.Node, numNodes)
-	for i := 0; i < numNodes; i++ {
-		nArray[i] = &v1.Node{}
-		nArray[i].Name = fmt.Sprintf("node%d", i)
-	}
-	for i := 0; i < numNodes; i++ {
-		mArray[i] = &v1.Node{}
-		mArray[i].Name = fmt.Sprintf("node%d", i+1)
-	}
-
-	if !nodeSlicesEqualForLB(nArray, nArray) {
-		t.Errorf("nodeSlicesEqualForLB() Expected=true Obtained=false")
-	}
-	if nodeSlicesEqualForLB(nArray, mArray) {
-		t.Errorf("nodeSlicesEqualForLB() Expected=false Obtained=true")
 	}
 }
 
@@ -1563,8 +1984,7 @@ func TestPatchStatus(t *testing.T) {
 	}
 }
 
-func Test_getNodeConditionPredicate(t *testing.T) {
-	validNodeStatus := v1.NodeStatus{Conditions: []v1.NodeCondition{{Type: "Test"}}}
+func Test_respectsPredicates(t *testing.T) {
 	tests := []struct {
 		name string
 
@@ -1574,20 +1994,16 @@ func Test_getNodeConditionPredicate(t *testing.T) {
 		{want: false, input: &v1.Node{}},
 		{want: true, input: &v1.Node{Status: v1.NodeStatus{Conditions: []v1.NodeCondition{{Type: v1.NodeReady, Status: v1.ConditionTrue}}}}},
 		{want: false, input: &v1.Node{Status: v1.NodeStatus{Conditions: []v1.NodeCondition{{Type: v1.NodeReady, Status: v1.ConditionFalse}}}}},
-		{want: true, input: &v1.Node{Spec: v1.NodeSpec{Unschedulable: true}, Status: v1.NodeStatus{Conditions: []v1.NodeCondition{{Type: v1.NodeReady, Status: v1.ConditionTrue}}}}},
-
-		{want: true, input: &v1.Node{Status: validNodeStatus, ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{}}}},
-		{want: false, input: &v1.Node{Status: validNodeStatus, ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{v1.LabelNodeExcludeBalancers: ""}}}},
+		{want: true, input: &v1.Node{Status: v1.NodeStatus{Conditions: []v1.NodeCondition{{Type: v1.NodeReady, Status: v1.ConditionTrue}}}, ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{}}}},
+		{want: false, input: &v1.Node{Status: v1.NodeStatus{Conditions: []v1.NodeCondition{{Type: v1.NodeReady, Status: v1.ConditionTrue}}}, ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{v1.LabelNodeExcludeBalancers: ""}}}},
 
 		{want: false, input: &v1.Node{Status: v1.NodeStatus{Conditions: []v1.NodeCondition{{Type: v1.NodeReady, Status: v1.ConditionTrue}}},
 			Spec: v1.NodeSpec{Taints: []v1.Taint{{Key: ToBeDeletedTaint, Value: fmt.Sprint(time.Now().Unix()), Effect: v1.TaintEffectNoSchedule}}}}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			c := &Controller{}
-
-			if result := c.getNodeConditionPredicate()(tt.input); result != tt.want {
-				t.Errorf("getNodeConditionPredicate() = %v, want %v", result, tt.want)
+			if result := respectsPredicates(tt.input, allNodePredicates...); result != tt.want {
+				t.Errorf("matchesPredicates() = %v, want %v", result, tt.want)
 			}
 		})
 	}
@@ -1644,7 +2060,7 @@ func TestListWithPredicate(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			get, err := listWithPredicate(fakeInformerFactory.Core().V1().Nodes().Lister(), test.predicate)
+			get, err := listWithPredicates(fakeInformerFactory.Core().V1().Nodes().Lister(), test.predicate)
 			sort.Slice(get, func(i, j int) bool {
 				return get[i].Name < get[j].Name
 			})
@@ -1657,181 +2073,349 @@ func TestListWithPredicate(t *testing.T) {
 	}
 }
 
-func Test_shouldSyncNode(t *testing.T) {
-	testcases := []struct {
-		name       string
-		oldNode    *v1.Node
-		newNode    *v1.Node
-		shouldSync bool
-	}{
-		{
-			name: "spec.unschedable field changed",
-			oldNode: &v1.Node{
-				ObjectMeta: metav1.ObjectMeta{
-					Name: "node",
-				},
-				Spec: v1.NodeSpec{
-					Unschedulable: false,
-				},
-			},
-			newNode: &v1.Node{
-				ObjectMeta: metav1.ObjectMeta{
-					Name: "node",
-				},
-				Spec: v1.NodeSpec{
-					Unschedulable: true,
-				},
-			},
-			shouldSync: true,
+type nodeTweak func(n *v1.Node)
+
+// TODO: use this pattern in all the tests above.
+func makeNode(tweaks ...nodeTweak) *v1.Node {
+	n := &v1.Node{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:   "node",
+			Labels: map[string]string{},
 		},
-		{
-			name: "labels changed",
-			oldNode: &v1.Node{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:   "node",
-					Labels: map[string]string{},
-				},
-			},
-			newNode: &v1.Node{
-				ObjectMeta: metav1.ObjectMeta{
-					Name: "node",
-					Labels: map[string]string{
-						v1.LabelNodeExcludeBalancers: "",
-					},
-				},
-			},
-			shouldSync: true,
+		Spec: v1.NodeSpec{
+			Taints: []v1.Taint{},
 		},
-		{
-			name: "ready condition changed",
-			oldNode: &v1.Node{
-				ObjectMeta: metav1.ObjectMeta{
-					Name: "node",
-				},
-				Status: v1.NodeStatus{
-					Conditions: []v1.NodeCondition{
-						{
-							Type:   v1.NodeReady,
-							Status: v1.ConditionTrue,
-						},
-					},
-				},
-			},
-			newNode: &v1.Node{
-				ObjectMeta: metav1.ObjectMeta{
-					Name: "node",
-				},
-				Status: v1.NodeStatus{
-					Conditions: []v1.NodeCondition{
-						{
-							Type:   v1.NodeReady,
-							Status: v1.ConditionFalse,
-						},
-					},
-				},
-			},
-			shouldSync: true,
-		},
-		{
-			name: "not relevant condition changed and no ready condition",
-			oldNode: &v1.Node{
-				ObjectMeta: metav1.ObjectMeta{
-					Name: "node",
-				},
-				Status: v1.NodeStatus{
-					Conditions: []v1.NodeCondition{
-						{
-							Type:   v1.NodeNetworkUnavailable,
-							Status: v1.ConditionTrue,
-						},
-					},
-				},
-			},
-			newNode: &v1.Node{
-				ObjectMeta: metav1.ObjectMeta{
-					Name: "node",
-				},
-				Status: v1.NodeStatus{
-					Conditions: []v1.NodeCondition{
-						{
-							Type:   v1.NodeNetworkUnavailable,
-							Status: v1.ConditionFalse,
-						},
-					},
-				},
-			},
-			shouldSync: false,
+		Status: v1.NodeStatus{
+			Conditions: []v1.NodeCondition{{
+				Type:   v1.NodeReady,
+				Status: v1.ConditionTrue,
+			}},
 		},
 	}
 
+	for _, tw := range tweaks {
+		tw(n)
+	}
+	return n
+}
+
+func tweakName(name string) nodeTweak {
+	return func(n *v1.Node) {
+		n.Name = name
+	}
+}
+
+func tweakAddTaint(key string) nodeTweak {
+	return func(n *v1.Node) {
+		n.Spec.Taints = append(n.Spec.Taints, v1.Taint{Key: key})
+	}
+}
+
+func tweakSetLabel(key, val string) nodeTweak {
+	return func(n *v1.Node) {
+		n.Labels[key] = val
+	}
+}
+
+func tweakSetCondition(condType v1.NodeConditionType, condStatus v1.ConditionStatus) nodeTweak {
+	return func(n *v1.Node) {
+		var cond *v1.NodeCondition
+		for i := range n.Status.Conditions {
+			c := &n.Status.Conditions[i]
+			if c.Type == condType {
+				cond = c
+				break
+			}
+		}
+		if cond == nil {
+			n.Status.Conditions = append(n.Status.Conditions, v1.NodeCondition{})
+			cond = &n.Status.Conditions[len(n.Status.Conditions)-1]
+		}
+		*cond = v1.NodeCondition{
+			Type:   condType,
+			Status: condStatus,
+		}
+	}
+}
+
+func tweakSetReady(val bool) nodeTweak {
+	var condStatus v1.ConditionStatus
+
+	if val {
+		condStatus = v1.ConditionTrue
+	} else {
+		condStatus = v1.ConditionFalse
+	}
+
+	return tweakSetCondition(v1.NodeReady, condStatus)
+}
+
+func tweakUnsetCondition(condType v1.NodeConditionType) nodeTweak {
+	return func(n *v1.Node) {
+		for i := range n.Status.Conditions {
+			c := &n.Status.Conditions[i]
+			if c.Type == condType {
+				// Hacky but easy.
+				c.Type = "SomethingElse"
+				break
+			}
+		}
+	}
+}
+
+func tweakDeleted() nodeTweak {
+	return func(n *v1.Node) {
+		n.DeletionTimestamp = &metav1.Time{
+			Time: time.Now(),
+		}
+	}
+}
+
+func Test_shouldSyncUpdatedNode_individualPredicates(t *testing.T) {
+	testcases := []struct {
+		name                 string
+		oldNode              *v1.Node
+		newNode              *v1.Node
+		shouldSync           bool
+		stableNodeSetEnabled bool
+	}{{
+		name:       "nothing changed",
+		oldNode:    makeNode(),
+		newNode:    makeNode(),
+		shouldSync: false,
+	}, {
+		name:                 "nothing changed",
+		oldNode:              makeNode(),
+		newNode:              makeNode(),
+		shouldSync:           false,
+		stableNodeSetEnabled: true,
+	}, {
+		name:       "taint F->T",
+		oldNode:    makeNode(),
+		newNode:    makeNode(tweakAddTaint(ToBeDeletedTaint)),
+		shouldSync: true,
+	}, {
+		name:       "taint T->F",
+		oldNode:    makeNode(tweakAddTaint(ToBeDeletedTaint)),
+		newNode:    makeNode(),
+		shouldSync: true,
+	}, {
+		name:       "taint T->T",
+		oldNode:    makeNode(tweakAddTaint(ToBeDeletedTaint)),
+		newNode:    makeNode(tweakAddTaint(ToBeDeletedTaint)),
+		shouldSync: false,
+	}, {
+		name:       "other taint F->T",
+		oldNode:    makeNode(),
+		newNode:    makeNode(tweakAddTaint("other")),
+		shouldSync: false,
+	}, {
+		name:       "other taint T->F",
+		oldNode:    makeNode(tweakAddTaint("other")),
+		newNode:    makeNode(),
+		shouldSync: false,
+	}, {
+		name:       "excluded F->T",
+		oldNode:    makeNode(),
+		newNode:    makeNode(tweakSetLabel(v1.LabelNodeExcludeBalancers, "")),
+		shouldSync: true,
+	}, {
+		name:       "excluded changed T->F",
+		oldNode:    makeNode(tweakSetLabel(v1.LabelNodeExcludeBalancers, "")),
+		newNode:    makeNode(),
+		shouldSync: true,
+	}, {
+		name:       "excluded changed T->T",
+		oldNode:    makeNode(tweakSetLabel(v1.LabelNodeExcludeBalancers, "")),
+		newNode:    makeNode(tweakSetLabel(v1.LabelNodeExcludeBalancers, "")),
+		shouldSync: false,
+	}, {
+		name:                 "excluded F->T",
+		oldNode:              makeNode(),
+		newNode:              makeNode(tweakSetLabel(v1.LabelNodeExcludeBalancers, "")),
+		shouldSync:           true,
+		stableNodeSetEnabled: true,
+	}, {
+		name:                 "excluded changed T->F",
+		oldNode:              makeNode(tweakSetLabel(v1.LabelNodeExcludeBalancers, "")),
+		newNode:              makeNode(),
+		shouldSync:           true,
+		stableNodeSetEnabled: true,
+	}, {
+		name:                 "excluded changed T->T",
+		oldNode:              makeNode(tweakSetLabel(v1.LabelNodeExcludeBalancers, "")),
+		newNode:              makeNode(tweakSetLabel(v1.LabelNodeExcludeBalancers, "")),
+		shouldSync:           false,
+		stableNodeSetEnabled: true,
+	}, {
+		name:       "other label changed F->T",
+		oldNode:    makeNode(),
+		newNode:    makeNode(tweakSetLabel("other", "")),
+		shouldSync: false,
+	}, {
+		name:       "other label changed T->F",
+		oldNode:    makeNode(tweakSetLabel("other", "")),
+		newNode:    makeNode(),
+		shouldSync: false,
+	}, {
+		name:       "readiness changed F->T",
+		oldNode:    makeNode(tweakSetReady(false)),
+		newNode:    makeNode(),
+		shouldSync: true,
+	}, {
+		name:       "readiness changed T->F",
+		oldNode:    makeNode(),
+		newNode:    makeNode(tweakSetReady(false)),
+		shouldSync: true,
+	}, {
+		name:       "readiness changed F->F",
+		oldNode:    makeNode(tweakSetReady(false)),
+		newNode:    makeNode(tweakSetReady(false)),
+		shouldSync: false,
+	}, {
+		name:       "readiness changed F->unset",
+		oldNode:    makeNode(tweakSetReady(false)),
+		newNode:    makeNode(tweakUnsetCondition(v1.NodeReady)),
+		shouldSync: false,
+	}, {
+		name:       "readiness changed T->unset",
+		oldNode:    makeNode(),
+		newNode:    makeNode(tweakUnsetCondition(v1.NodeReady)),
+		shouldSync: true,
+	}, {
+		name:       "readiness changed unset->F",
+		oldNode:    makeNode(tweakUnsetCondition(v1.NodeReady)),
+		newNode:    makeNode(tweakSetReady(false)),
+		shouldSync: false,
+	}, {
+		name:       "readiness changed unset->T",
+		oldNode:    makeNode(tweakUnsetCondition(v1.NodeReady)),
+		newNode:    makeNode(),
+		shouldSync: true,
+	}, {
+		name:       "readiness changed unset->unset",
+		oldNode:    makeNode(tweakUnsetCondition(v1.NodeReady)),
+		newNode:    makeNode(tweakUnsetCondition(v1.NodeReady)),
+		shouldSync: false,
+	}, {
+		name:       "ready F, other condition changed F->T",
+		oldNode:    makeNode(tweakSetReady(false), tweakSetCondition(v1.NodeDiskPressure, v1.ConditionFalse)),
+		newNode:    makeNode(tweakSetReady(false), tweakSetCondition(v1.NodeDiskPressure, v1.ConditionTrue)),
+		shouldSync: false,
+	}, {
+		name:       "ready F, other condition changed T->F",
+		oldNode:    makeNode(tweakSetReady(false), tweakSetCondition(v1.NodeDiskPressure, v1.ConditionTrue)),
+		newNode:    makeNode(tweakSetReady(false), tweakSetCondition(v1.NodeDiskPressure, v1.ConditionFalse)),
+		shouldSync: false,
+	}, {
+		name:       "ready T, other condition changed F->T",
+		oldNode:    makeNode(tweakSetCondition("Other", v1.ConditionFalse)),
+		newNode:    makeNode(tweakSetCondition("Other", v1.ConditionTrue)),
+		shouldSync: false,
+	}, {
+		name:       "ready T, other condition changed T->F",
+		oldNode:    makeNode(tweakSetCondition("Other", v1.ConditionTrue)),
+		newNode:    makeNode(tweakSetCondition("Other", v1.ConditionFalse)),
+		shouldSync: false,
+	}, {
+		name:       "deletionTimestamp F -> T",
+		oldNode:    makeNode(),
+		newNode:    makeNode(tweakDeleted()),
+		shouldSync: false,
+	}, {
+		name:                 "deletionTimestamp F -> T",
+		oldNode:              makeNode(),
+		newNode:              makeNode(tweakDeleted()),
+		shouldSync:           false,
+		stableNodeSetEnabled: true,
+	}}
 	for _, testcase := range testcases {
-		t.Run(testcase.name, func(t *testing.T) {
-			shouldSync := shouldSyncNode(testcase.oldNode, testcase.newNode)
+		t.Run(fmt.Sprintf("%s - StableLoadBalancerNodeSet: %v", testcase.name, testcase.stableNodeSetEnabled), func(t *testing.T) {
+			defer featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.StableLoadBalancerNodeSet, testcase.stableNodeSetEnabled)()
+			shouldSync := shouldSyncUpdatedNode(testcase.oldNode, testcase.newNode)
 			if shouldSync != testcase.shouldSync {
-				t.Logf("actual shouldSyncNode: %v", shouldSync)
-				t.Logf("expected shouldSyncNode: %v", testcase.shouldSync)
-				t.Errorf("unexpected result from shouldSyncNode")
+				t.Errorf("unexpected result from shouldSyncNode, expected: %v, actual: %v", testcase.shouldSync, shouldSync)
 			}
 		})
 	}
 }
 
-func TestTriggerNodeSync(t *testing.T) {
-	controller, _, _ := newController()
-
-	tryReadFromChannel(t, controller.nodeSyncCh, false)
-	controller.triggerNodeSync()
-	tryReadFromChannel(t, controller.nodeSyncCh, true)
-	tryReadFromChannel(t, controller.nodeSyncCh, false)
-	tryReadFromChannel(t, controller.nodeSyncCh, false)
-	tryReadFromChannel(t, controller.nodeSyncCh, false)
-	controller.triggerNodeSync()
-	controller.triggerNodeSync()
-	controller.triggerNodeSync()
-	tryReadFromChannel(t, controller.nodeSyncCh, true)
-	tryReadFromChannel(t, controller.nodeSyncCh, false)
-	tryReadFromChannel(t, controller.nodeSyncCh, false)
-	tryReadFromChannel(t, controller.nodeSyncCh, false)
-}
-
-func TestMarkAndUnmarkFullSync(t *testing.T) {
-	controller, _, _ := newController()
-	if controller.needFullSync != false {
-		t.Errorf("expect controller.needFullSync to be false, but got true")
-	}
-
-	ret := controller.needFullSyncAndUnmark()
-	if ret != false {
-		t.Errorf("expect ret == false, but got true")
-	}
-
-	ret = controller.needFullSyncAndUnmark()
-	if ret != false {
-		t.Errorf("expect ret == false, but got true")
-	}
-	controller.needFullSync = true
-	ret = controller.needFullSyncAndUnmark()
-	if ret != true {
-		t.Errorf("expect ret == true, but got false")
-	}
-	ret = controller.needFullSyncAndUnmark()
-	if ret != false {
-		t.Errorf("expect ret == false, but got true")
-	}
-}
-
-func tryReadFromChannel(t *testing.T, ch chan interface{}, expectValue bool) {
-	select {
-	case _, ok := <-ch:
-		if !ok {
-			t.Errorf("The channel is closed")
-		}
-		if !expectValue {
-			t.Errorf("Does not expect value from the channel, but got a value")
-		}
-	default:
-		if expectValue {
-			t.Errorf("Expect value from the channel, but got none")
+func Test_shouldSyncUpdatedNode_compoundedPredicates(t *testing.T) {
+	for _, fgEnabled := range []bool{true, false} {
+		defer featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.StableLoadBalancerNodeSet, fgEnabled)()
+		testcases := []struct {
+			name       string
+			oldNode    *v1.Node
+			newNode    *v1.Node
+			shouldSync bool
+		}{{
+			name:       "tainted T, excluded F->T",
+			oldNode:    makeNode(tweakAddTaint(ToBeDeletedTaint)),
+			newNode:    makeNode(tweakAddTaint(ToBeDeletedTaint), tweakSetLabel(v1.LabelNodeExcludeBalancers, "")),
+			shouldSync: true,
+		}, {
+			name:       "tainted T, excluded T->F",
+			oldNode:    makeNode(tweakAddTaint(ToBeDeletedTaint), tweakSetLabel(v1.LabelNodeExcludeBalancers, "")),
+			newNode:    makeNode(tweakAddTaint(ToBeDeletedTaint)),
+			shouldSync: true,
+		}, {
+			name:       "tainted T, ready F->T",
+			oldNode:    makeNode(tweakAddTaint(ToBeDeletedTaint), tweakSetReady(false)),
+			newNode:    makeNode(tweakAddTaint(ToBeDeletedTaint)),
+			shouldSync: false,
+		}, {
+			name:       "tainted T, ready T->F",
+			oldNode:    makeNode(tweakAddTaint(ToBeDeletedTaint)),
+			newNode:    makeNode(tweakAddTaint(ToBeDeletedTaint), tweakSetReady(false)),
+			shouldSync: false,
+		}, {
+			name:       "excluded T, tainted F->T",
+			oldNode:    makeNode(tweakSetLabel(v1.LabelNodeExcludeBalancers, "")),
+			newNode:    makeNode(tweakSetLabel(v1.LabelNodeExcludeBalancers, ""), tweakAddTaint(ToBeDeletedTaint)),
+			shouldSync: false,
+		}, {
+			name:       "excluded T, tainted T->F",
+			oldNode:    makeNode(tweakSetLabel(v1.LabelNodeExcludeBalancers, ""), tweakAddTaint(ToBeDeletedTaint)),
+			newNode:    makeNode(tweakSetLabel(v1.LabelNodeExcludeBalancers, "")),
+			shouldSync: false,
+		}, {
+			name:       "excluded T, ready F->T",
+			oldNode:    makeNode(tweakSetLabel(v1.LabelNodeExcludeBalancers, ""), tweakSetReady(false)),
+			newNode:    makeNode(tweakSetLabel(v1.LabelNodeExcludeBalancers, "")),
+			shouldSync: false,
+		}, {
+			name:       "excluded T, ready T->F",
+			oldNode:    makeNode(tweakSetLabel(v1.LabelNodeExcludeBalancers, "")),
+			newNode:    makeNode(tweakSetLabel(v1.LabelNodeExcludeBalancers, ""), tweakSetReady(false)),
+			shouldSync: false,
+		}, {
+			name:       "ready F, tainted F->T",
+			oldNode:    makeNode(tweakSetReady(false)),
+			newNode:    makeNode(tweakSetReady(false), tweakAddTaint(ToBeDeletedTaint)),
+			shouldSync: false,
+		}, {
+			name:       "ready F, tainted T->F",
+			oldNode:    makeNode(tweakSetReady(false), tweakAddTaint(ToBeDeletedTaint)),
+			newNode:    makeNode(tweakSetReady(false)),
+			shouldSync: false,
+		}, {
+			name:       "ready F, excluded F->T",
+			oldNode:    makeNode(tweakSetReady(false)),
+			newNode:    makeNode(tweakSetReady(false), tweakSetLabel(v1.LabelNodeExcludeBalancers, "")),
+			shouldSync: true,
+		}, {
+			name:       "ready F, excluded T->F",
+			oldNode:    makeNode(tweakSetReady(false), tweakSetLabel(v1.LabelNodeExcludeBalancers, "")),
+			newNode:    makeNode(tweakSetReady(false)),
+			shouldSync: true,
+		}}
+		for _, testcase := range testcases {
+			t.Run(fmt.Sprintf("%s - StableLoadBalancerNodeSet: %v", testcase.name, fgEnabled), func(t *testing.T) {
+				shouldSync := shouldSyncUpdatedNode(testcase.oldNode, testcase.newNode)
+				if shouldSync != testcase.shouldSync {
+					t.Errorf("unexpected result from shouldSyncNode, expected: %v, actual: %v", testcase.shouldSync, shouldSync)
+				}
+			})
 		}
 	}
 }

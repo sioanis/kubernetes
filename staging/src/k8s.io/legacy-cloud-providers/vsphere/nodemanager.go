@@ -231,6 +231,7 @@ func (nm *NodeManager) DiscoverNode(node *v1.Node) error {
 					cancel()
 					break
 				}
+				cancel()
 			}
 			wg.Done()
 		}()
@@ -437,9 +438,9 @@ func (nodeInfo *NodeInfo) VM() *vclib.VirtualMachine {
 
 // vcConnect connects to vCenter with existing credentials
 // If credentials are invalid:
-// 		1. It will fetch credentials from credentialManager
-//      2. Update the credentials
-//		3. Connects again to vCenter with fetched credentials
+//  1. It will fetch credentials from credentialManager
+//  2. Update the credentials
+//  3. Connects again to vCenter with fetched credentials
 func (nm *NodeManager) vcConnect(ctx context.Context, vsphereInstance *VSphereInstance) error {
 	err := vsphereInstance.conn.Connect(ctx)
 	if err == nil {

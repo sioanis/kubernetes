@@ -193,11 +193,25 @@ func TestValidateStatefulSet(t *testing.T) {
 				},
 			},
 		},
+		{
+			name: "ordinals.start positive value",
+			set: apps.StatefulSet{
+				ObjectMeta: metav1.ObjectMeta{Name: "abc-123", Namespace: metav1.NamespaceDefault},
+				Spec: apps.StatefulSetSpec{
+					PodManagementPolicy: apps.ParallelPodManagement,
+					UpdateStrategy:      apps.StatefulSetUpdateStrategy{Type: apps.RollingUpdateStatefulSetStrategyType},
+					Selector:            &metav1.LabelSelector{MatchLabels: validLabels},
+					Template:            validPodTemplate.Template,
+					Replicas:            3,
+					Ordinals:            &apps.StatefulSetOrdinals{Start: 2},
+				},
+			},
+		},
 	}
 
 	errorCases := []testCase{
 		{
-			name: "zero-length ID",
+			name: "zero-length name",
 			set: apps.StatefulSet{
 				ObjectMeta: metav1.ObjectMeta{Name: "", Namespace: metav1.NamespaceDefault},
 				Spec: apps.StatefulSetSpec{
@@ -209,6 +223,36 @@ func TestValidateStatefulSet(t *testing.T) {
 			},
 			errs: field.ErrorList{
 				field.Required(field.NewPath("metadata", "name"), ""),
+			},
+		},
+		{
+			name: "name-with-dots",
+			set: apps.StatefulSet{
+				ObjectMeta: metav1.ObjectMeta{Name: "abc.123", Namespace: metav1.NamespaceDefault},
+				Spec: apps.StatefulSetSpec{
+					PodManagementPolicy: apps.OrderedReadyPodManagement,
+					Selector:            &metav1.LabelSelector{MatchLabels: validLabels},
+					Template:            validPodTemplate.Template,
+					UpdateStrategy:      apps.StatefulSetUpdateStrategy{Type: apps.RollingUpdateStatefulSetStrategyType},
+				},
+			},
+			errs: field.ErrorList{
+				field.Invalid(field.NewPath("metadata", "name"), "abc.123", ""),
+			},
+		},
+		{
+			name: "long name",
+			set: apps.StatefulSet{
+				ObjectMeta: metav1.ObjectMeta{Name: strings.Repeat("a", 64), Namespace: metav1.NamespaceDefault},
+				Spec: apps.StatefulSetSpec{
+					PodManagementPolicy: apps.OrderedReadyPodManagement,
+					Selector:            &metav1.LabelSelector{MatchLabels: validLabels},
+					Template:            validPodTemplate.Template,
+					UpdateStrategy:      apps.StatefulSetUpdateStrategy{Type: apps.RollingUpdateStatefulSetStrategyType},
+				},
+			},
+			errs: field.ErrorList{
+				field.Invalid(field.NewPath("metadata", "name"), strings.Repeat("a", 64), ""),
 			},
 		},
 		{
@@ -633,6 +677,23 @@ func TestValidateStatefulSet(t *testing.T) {
 			},
 			errs: field.ErrorList{
 				field.Invalid(field.NewPath("spec", "updateStrategy", "rollingUpdate", "maxUnavailable"), nil, ""),
+			},
+		},
+		{
+			name: "invalid ordinals.start ",
+			set: apps.StatefulSet{
+				ObjectMeta: metav1.ObjectMeta{Name: "abc-123", Namespace: metav1.NamespaceDefault},
+				Spec: apps.StatefulSetSpec{
+					PodManagementPolicy: apps.ParallelPodManagement,
+					UpdateStrategy:      apps.StatefulSetUpdateStrategy{Type: apps.RollingUpdateStatefulSetStrategyType},
+					Selector:            &metav1.LabelSelector{MatchLabels: validLabels},
+					Template:            validPodTemplate.Template,
+					Replicas:            3,
+					Ordinals:            &apps.StatefulSetOrdinals{Start: -2},
+				},
+			},
+			errs: field.ErrorList{
+				field.Invalid(field.NewPath("spec", "ordinals.start"), nil, ""),
 			},
 		},
 	}
@@ -1124,6 +1185,51 @@ func TestValidateStatefulSetUpdate(t *testing.T) {
 				},
 			},
 		},
+		{
+			name: "update existing instance with now-invalid name",
+			old: apps.StatefulSet{
+				ObjectMeta: metav1.ObjectMeta{Name: "abc.123.example", Namespace: metav1.NamespaceDefault, Finalizers: []string{"final"}},
+				Spec: apps.StatefulSetSpec{
+					PodManagementPolicy: apps.OrderedReadyPodManagement,
+					Selector:            &metav1.LabelSelector{MatchLabels: validLabels},
+					Template:            validPodTemplate.Template,
+					UpdateStrategy:      apps.StatefulSetUpdateStrategy{Type: apps.RollingUpdateStatefulSetStrategyType},
+				},
+			},
+			update: apps.StatefulSet{
+				ObjectMeta: metav1.ObjectMeta{Name: "abc.123.example", Namespace: metav1.NamespaceDefault, Finalizers: []string{}},
+				Spec: apps.StatefulSetSpec{
+					PodManagementPolicy: apps.OrderedReadyPodManagement,
+					Selector:            &metav1.LabelSelector{MatchLabels: validLabels},
+					Template:            validPodTemplate.Template,
+					UpdateStrategy:      apps.StatefulSetUpdateStrategy{Type: apps.RollingUpdateStatefulSetStrategyType},
+				},
+			},
+		},
+		{
+			name: "update existing instance with .spec.ordinals.start",
+			old: apps.StatefulSet{
+				ObjectMeta: metav1.ObjectMeta{Name: "abc.123.example", Namespace: metav1.NamespaceDefault},
+				Spec: apps.StatefulSetSpec{
+					PodManagementPolicy: apps.OrderedReadyPodManagement,
+					Selector:            &metav1.LabelSelector{MatchLabels: validLabels},
+					Template:            validPodTemplate.Template,
+					UpdateStrategy:      apps.StatefulSetUpdateStrategy{Type: apps.RollingUpdateStatefulSetStrategyType},
+				},
+			},
+			update: apps.StatefulSet{
+				ObjectMeta: metav1.ObjectMeta{Name: "abc.123.example", Namespace: metav1.NamespaceDefault},
+				Spec: apps.StatefulSetSpec{
+					PodManagementPolicy: apps.OrderedReadyPodManagement,
+					Selector:            &metav1.LabelSelector{MatchLabels: validLabels},
+					Template:            validPodTemplate.Template,
+					UpdateStrategy:      apps.StatefulSetUpdateStrategy{Type: apps.RollingUpdateStatefulSetStrategyType},
+					Ordinals: &apps.StatefulSetOrdinals{
+						Start: 3,
+					},
+				},
+			},
+		},
 	}
 
 	errorCases := []testCase{
@@ -1351,7 +1457,11 @@ func TestValidateStatefulSetUpdate(t *testing.T) {
 		},
 	}
 
-	cmpOpts := []cmp.Option{cmpopts.IgnoreFields(field.Error{}, "BadValue", "Detail"), cmpopts.SortSlices(func(a, b *field.Error) bool { return a.Error() < b.Error() })}
+	cmpOpts := []cmp.Option{
+		cmpopts.IgnoreFields(field.Error{}, "BadValue", "Detail"),
+		cmpopts.SortSlices(func(a, b *field.Error) bool { return a.Error() < b.Error() }),
+		cmpopts.EquateEmpty(),
+	}
 	for _, testCase := range append(successCases, errorCases...) {
 		name := testCase.name
 		var testTitle string
@@ -2396,8 +2506,6 @@ func TestValidateDaemonSetUpdate(t *testing.T) {
 }
 
 func TestValidateDaemonSet(t *testing.T) {
-	defer featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.EphemeralContainers, true)()
-
 	validSelector := map[string]string{"a": "b"}
 	validPodTemplate := api.PodTemplate{
 		Template: api.PodTemplateSpec{
@@ -2660,8 +2768,6 @@ func validDeployment() *apps.Deployment {
 }
 
 func TestValidateDeployment(t *testing.T) {
-	defer featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.EphemeralContainers, true)()
-
 	successCases := []*apps.Deployment{
 		validDeployment(),
 	}
@@ -3591,7 +3697,6 @@ func TestValidateReplicaSet(t *testing.T) {
 func TestDaemonSetUpdateMaxSurge(t *testing.T) {
 	testCases := map[string]struct {
 		ds          *apps.RollingUpdateDaemonSet
-		enableSurge bool
 		expectError bool
 	}{
 		"invalid: unset": {
@@ -3637,45 +3742,40 @@ func TestDaemonSetUpdateMaxSurge(t *testing.T) {
 				MaxUnavailable: intstr.FromString("1%"),
 				MaxSurge:       intstr.FromString("1%"),
 			},
+			expectError: true,
 		},
 
 		"invalid: surge enabled, unavailable zero percent": {
 			ds: &apps.RollingUpdateDaemonSet{
 				MaxUnavailable: intstr.FromString("0%"),
 			},
-			enableSurge: true,
 			expectError: true,
 		},
 		"invalid: surge enabled, unavailable zero": {
 			ds: &apps.RollingUpdateDaemonSet{
 				MaxUnavailable: intstr.FromInt(0),
 			},
-			enableSurge: true,
 			expectError: true,
 		},
 		"valid: surge enabled, unavailable one": {
 			ds: &apps.RollingUpdateDaemonSet{
 				MaxUnavailable: intstr.FromInt(1),
 			},
-			enableSurge: true,
 		},
 		"valid: surge enabled, unavailable one percent": {
 			ds: &apps.RollingUpdateDaemonSet{
 				MaxUnavailable: intstr.FromString("1%"),
 			},
-			enableSurge: true,
 		},
 		"valid: surge enabled, unavailable 100%": {
 			ds: &apps.RollingUpdateDaemonSet{
 				MaxUnavailable: intstr.FromString("100%"),
 			},
-			enableSurge: true,
 		},
 		"invalid: surge enabled, unavailable greater than 100%": {
 			ds: &apps.RollingUpdateDaemonSet{
 				MaxUnavailable: intstr.FromString("101%"),
 			},
-			enableSurge: true,
 			expectError: true,
 		},
 
@@ -3683,39 +3783,33 @@ func TestDaemonSetUpdateMaxSurge(t *testing.T) {
 			ds: &apps.RollingUpdateDaemonSet{
 				MaxSurge: intstr.FromString("0%"),
 			},
-			enableSurge: true,
 			expectError: true,
 		},
 		"invalid: surge enabled, surge zero": {
 			ds: &apps.RollingUpdateDaemonSet{
 				MaxSurge: intstr.FromInt(0),
 			},
-			enableSurge: true,
 			expectError: true,
 		},
 		"valid: surge enabled, surge one": {
 			ds: &apps.RollingUpdateDaemonSet{
 				MaxSurge: intstr.FromInt(1),
 			},
-			enableSurge: true,
 		},
 		"valid: surge enabled, surge one percent": {
 			ds: &apps.RollingUpdateDaemonSet{
 				MaxSurge: intstr.FromString("1%"),
 			},
-			enableSurge: true,
 		},
 		"valid: surge enabled, surge 100%": {
 			ds: &apps.RollingUpdateDaemonSet{
 				MaxSurge: intstr.FromString("100%"),
 			},
-			enableSurge: true,
 		},
 		"invalid: surge enabled, surge greater than 100%": {
 			ds: &apps.RollingUpdateDaemonSet{
 				MaxSurge: intstr.FromString("101%"),
 			},
-			enableSurge: true,
 			expectError: true,
 		},
 
@@ -3724,7 +3818,6 @@ func TestDaemonSetUpdateMaxSurge(t *testing.T) {
 				MaxUnavailable: intstr.FromString("1%"),
 				MaxSurge:       intstr.FromString("1%"),
 			},
-			enableSurge: true,
 			expectError: true,
 		},
 
@@ -3733,7 +3826,6 @@ func TestDaemonSetUpdateMaxSurge(t *testing.T) {
 				MaxUnavailable: intstr.FromString("0%"),
 				MaxSurge:       intstr.FromString("0%"),
 			},
-			enableSurge: true,
 			expectError: true,
 		},
 		"invalid: surge enabled, surge and unavailable zero": {
@@ -3741,7 +3833,6 @@ func TestDaemonSetUpdateMaxSurge(t *testing.T) {
 				MaxUnavailable: intstr.FromInt(0),
 				MaxSurge:       intstr.FromInt(0),
 			},
-			enableSurge: true,
 			expectError: true,
 		},
 		"invalid: surge enabled, surge and unavailable mixed zero": {
@@ -3749,13 +3840,11 @@ func TestDaemonSetUpdateMaxSurge(t *testing.T) {
 				MaxUnavailable: intstr.FromInt(0),
 				MaxSurge:       intstr.FromString("0%"),
 			},
-			enableSurge: true,
 			expectError: true,
 		},
 	}
 	for tcName, tc := range testCases {
 		t.Run(tcName, func(t *testing.T) {
-			defer featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.DaemonSetUpdateSurge, tc.enableSurge)()
 			errs := ValidateRollingUpdateDaemonSet(tc.ds, field.NewPath("spec", "updateStrategy", "rollingUpdate"))
 			if tc.expectError && len(errs) == 0 {
 				t.Errorf("Unexpected success")

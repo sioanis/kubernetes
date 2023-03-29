@@ -17,6 +17,7 @@ limitations under the License.
 package metrics
 
 import (
+	"errors"
 	"sync"
 
 	"k8s.io/apimachinery/pkg/labels"
@@ -92,10 +93,11 @@ type attachDetachStateCollector struct {
 }
 
 // volumeCount is a map of maps used as a counter, e.g.:
-//     node 172.168.1.100.ec2.internal has 10 EBS and 3 glusterfs PVC in use:
-//     {"172.168.1.100.ec2.internal": {"aws-ebs": 10, "glusterfs": 3}}
-//     state actual_state_of_world contains a total of 10 EBS volumes:
-//     {"actual_state_of_world": {"aws-ebs": 10}}
+//
+//	node 172.168.1.100.ec2.internal has 10 EBS and 3 glusterfs PVC in use:
+//	{"172.168.1.100.ec2.internal": {"aws-ebs": 10, "glusterfs": 3}}
+//	state actual_state_of_world contains a total of 10 EBS volumes:
+//	{"actual_state_of_world": {"aws-ebs": 10}}
 type volumeCount map[string]map[string]int64
 
 func (v volumeCount) add(typeKey, counterKey string) {
@@ -128,7 +130,7 @@ func (collector *attachDetachStateCollector) DescribeWithStability(ch chan<- *me
 }
 
 func (collector *attachDetachStateCollector) CollectWithStability(ch chan<- metrics.Metric) {
-	nodeVolumeMap := collector.getVolumeInUseCount()
+	nodeVolumeMap := collector.getVolumeInUseCount(klog.TODO())
 	for nodeName, pluginCount := range nodeVolumeMap {
 		for pluginName, count := range pluginCount {
 			ch <- metrics.NewLazyConstMetric(inUseVolumeMetricDesc,
@@ -151,10 +153,10 @@ func (collector *attachDetachStateCollector) CollectWithStability(ch chan<- metr
 	}
 }
 
-func (collector *attachDetachStateCollector) getVolumeInUseCount() volumeCount {
+func (collector *attachDetachStateCollector) getVolumeInUseCount(logger klog.Logger) volumeCount {
 	pods, err := collector.podLister.List(labels.Everything())
 	if err != nil {
-		klog.Errorf("Error getting pod list")
+		logger.Error(errors.New("Error getting pod list"), "Get pod list failed")
 		return nil
 	}
 
@@ -168,7 +170,7 @@ func (collector *attachDetachStateCollector) getVolumeInUseCount() volumeCount {
 			continue
 		}
 		for _, podVolume := range pod.Spec.Volumes {
-			volumeSpec, err := util.CreateVolumeSpec(podVolume, pod, types.NodeName(pod.Spec.NodeName), collector.volumePluginMgr, collector.pvcLister, collector.pvLister, collector.csiMigratedPluginManager, collector.intreeToCSITranslator)
+			volumeSpec, err := util.CreateVolumeSpec(logger, podVolume, pod, types.NodeName(pod.Spec.NodeName), collector.volumePluginMgr, collector.pvcLister, collector.pvLister, collector.csiMigratedPluginManager, collector.intreeToCSITranslator)
 			if err != nil {
 				continue
 			}

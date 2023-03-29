@@ -17,6 +17,7 @@ limitations under the License.
 package utils
 
 import (
+	"fmt"
 	"path"
 	"strings"
 
@@ -33,18 +34,18 @@ import (
 //
 // All of that is optional, see PatchCSIOptions. Just beware
 // that not renaming the CSI driver deployment can be problematic:
-// - when multiple tests deploy the driver, they need
-//   to run sequentially
-// - might conflict with manual deployments
+//   - when multiple tests deploy the driver, they need
+//     to run sequentially
+//   - might conflict with manual deployments
 //
 // This function is written so that it works for CSI driver deployments
 // that follow these conventions:
-// - driver and provisioner names are identical
-// - the driver binary accepts a --drivername parameter
-// - the paths inside the container are either fixed
-//   and don't need to be patch (for example, --csi-address=/csi/csi.sock is
-//   okay) or are specified directly in a parameter (for example,
-//   --kubelet-registration-path=/var/lib/kubelet/plugins/csi-hostpath/csi.sock)
+//   - driver and provisioner names are identical
+//   - the driver binary accepts a --drivername parameter
+//   - the paths inside the container are either fixed
+//     and don't need to be patch (for example, --csi-address=/csi/csi.sock is
+//     okay) or are specified directly in a parameter (for example,
+//     --kubelet-registration-path=/var/lib/kubelet/plugins/csi-hostpath/csi.sock)
 //
 // Driver deployments that are different will have to do the patching
 // without this function, or skip patching entirely.
@@ -92,6 +93,11 @@ func PatchCSIDeployment(f *e2eframework.Framework, o PatchCSIOptions, object int
 			}
 			for e := range container.VolumeMounts {
 				container.VolumeMounts[e].MountPath = substKubeletRootDir(container.VolumeMounts[e].MountPath)
+			}
+
+			if len(o.Features) > 0 && len(o.Features[container.Name]) > 0 {
+				featuregateString := strings.Join(o.Features[container.Name], ",")
+				container.Args = append(container.Args, fmt.Sprintf("--feature-gates=%s", featuregateString))
 			}
 
 			// Overwrite driver name resp. provider name
@@ -152,6 +158,9 @@ func PatchCSIDeployment(f *e2eframework.Framework, o PatchCSIOptions, object int
 		if o.FSGroupPolicy != nil {
 			object.Spec.FSGroupPolicy = o.FSGroupPolicy
 		}
+		if o.SELinuxMount != nil {
+			object.Spec.SELinuxMount = o.SELinuxMount
+		}
 	}
 
 	return nil
@@ -211,4 +220,14 @@ type PatchCSIOptions struct {
 	// field *if* the driver deploys a CSIDriver object. Ignored
 	// otherwise.
 	FSGroupPolicy *storagev1.FSGroupPolicy
+	// If not nil, the value to use for the CSIDriver.Spec.SELinuxMount
+	// field *if* the driver deploys a CSIDriver object. Ignored
+	// otherwise.
+	SELinuxMount *bool
+	// If not nil, the values will be used for setting feature arguments to
+	// specific sidecar.
+	// Feature is a map - where key is sidecar name such as:
+	//	-- key: resizer
+	//	-- value: []string{feature-gates}
+	Features map[string][]string
 }

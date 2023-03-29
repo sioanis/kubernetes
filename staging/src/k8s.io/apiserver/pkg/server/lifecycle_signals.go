@@ -107,8 +107,8 @@ type lifecycleSignal interface {
 // for us to write unit tests that can verify expected graceful termination behavior.
 //
 // GenericAPIServer can use these to either:
-//  - signal that a particular termination event has transpired
-//  - wait for a designated termination event to transpire and do some action.
+//   - signal that a particular termination event has transpired
+//   - wait for a designated termination event to transpire and do some action.
 type lifecycleSignals struct {
 	// ShutdownInitiated event is signaled when an apiserver shutdown has been initiated.
 	// It is signaled when the `stopCh` provided by the main goroutine
@@ -144,6 +144,14 @@ type lifecycleSignals struct {
 	// It exists primarily to avoid returning a 404 response when a resource actually exists but we haven't installed the path to a handler.
 	// The actual logic is implemented by an APIServer using the generic server library.
 	MuxAndDiscoveryComplete lifecycleSignal
+}
+
+// ShuttingDown returns the lifecycle signal that is signaled when
+// the server is not accepting any new requests.
+// this is the lifecycle event that is exported to the request handler
+// logic to indicate that the server is shutting down.
+func (s lifecycleSignals) ShuttingDown() <-chan struct{} {
+	return s.NotAcceptingNewRequest.Signaled()
 }
 
 // newLifecycleSignals returns an instance of lifecycleSignals interface to be used

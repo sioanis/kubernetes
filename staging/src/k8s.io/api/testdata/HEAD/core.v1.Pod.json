@@ -394,7 +394,12 @@
                 },
                 "requests": {
                   "requestsKey": "0"
-                }
+                },
+                "claims": [
+                  {
+                    "name": "nameValue"
+                  }
+                ]
               },
               "volumeName": "volumeNameValue",
               "storageClassName": "storageClassNameValue",
@@ -407,7 +412,8 @@
               "dataSourceRef": {
                 "apiGroup": "apiGroupValue",
                 "kind": "kindValue",
-                "name": "nameValue"
+                "name": "nameValue",
+                "namespace": "namespaceValue"
               }
             }
           }
@@ -480,8 +486,19 @@
           },
           "requests": {
             "requestsKey": "0"
-          }
+          },
+          "claims": [
+            {
+              "name": "nameValue"
+            }
+          ]
         },
+        "resizePolicy": [
+          {
+            "resourceName": "resourceNameValue",
+            "restartPolicy": "restartPolicyValue"
+          }
+        ],
         "volumeMounts": [
           {
             "name": "nameValue",
@@ -752,8 +769,19 @@
           },
           "requests": {
             "requestsKey": "0"
-          }
+          },
+          "claims": [
+            {
+              "name": "nameValue"
+            }
+          ]
         },
+        "resizePolicy": [
+          {
+            "resourceName": "resourceNameValue",
+            "restartPolicy": "restartPolicyValue"
+          }
+        ],
         "volumeMounts": [
           {
             "name": "nameValue",
@@ -1024,8 +1052,19 @@
           },
           "requests": {
             "requestsKey": "0"
-          }
+          },
+          "claims": [
+            {
+              "name": "nameValue"
+            }
+          ]
         },
+        "resizePolicy": [
+          {
+            "resourceName": "resourceNameValue",
+            "restartPolicy": "restartPolicyValue"
+          }
+        ],
         "volumeMounts": [
           {
             "name": "nameValue",
@@ -1558,13 +1597,31 @@
         },
         "minDomains": 5,
         "nodeAffinityPolicy": "nodeAffinityPolicyValue",
-        "nodeTaintsPolicy": "nodeTaintsPolicyValue"
+        "nodeTaintsPolicy": "nodeTaintsPolicyValue",
+        "matchLabelKeys": [
+          "matchLabelKeysValue"
+        ]
       }
     ],
     "setHostnameAsFQDN": true,
     "os": {
       "name": "nameValue"
-    }
+    },
+    "hostUsers": true,
+    "schedulingGates": [
+      {
+        "name": "nameValue"
+      }
+    ],
+    "resourceClaims": [
+      {
+        "name": "nameValue",
+        "source": {
+          "resourceClaimName": "resourceClaimNameValue",
+          "resourceClaimTemplateName": "resourceClaimTemplateNameValue"
+        }
+      }
+    ]
   },
   "status": {
     "phase": "phaseValue",
@@ -1633,7 +1690,23 @@
         "image": "imageValue",
         "imageID": "imageIDValue",
         "containerID": "containerIDValue",
-        "started": true
+        "started": true,
+        "allocatedResources": {
+          "allocatedResourcesKey": "0"
+        },
+        "resources": {
+          "limits": {
+            "limitsKey": "0"
+          },
+          "requests": {
+            "requestsKey": "0"
+          },
+          "claims": [
+            {
+              "name": "nameValue"
+            }
+          ]
+        }
       }
     ],
     "containerStatuses": [
@@ -1680,7 +1753,23 @@
         "image": "imageValue",
         "imageID": "imageIDValue",
         "containerID": "containerIDValue",
-        "started": true
+        "started": true,
+        "allocatedResources": {
+          "allocatedResourcesKey": "0"
+        },
+        "resources": {
+          "limits": {
+            "limitsKey": "0"
+          },
+          "requests": {
+            "requestsKey": "0"
+          },
+          "claims": [
+            {
+              "name": "nameValue"
+            }
+          ]
+        }
       }
     ],
     "qosClass": "qosClassValue",
@@ -1728,8 +1817,25 @@
         "image": "imageValue",
         "imageID": "imageIDValue",
         "containerID": "containerIDValue",
-        "started": true
+        "started": true,
+        "allocatedResources": {
+          "allocatedResourcesKey": "0"
+        },
+        "resources": {
+          "limits": {
+            "limitsKey": "0"
+          },
+          "requests": {
+            "requestsKey": "0"
+          },
+          "claims": [
+            {
+              "name": "nameValue"
+            }
+          ]
+        }
       }
-    ]
+    ],
+    "resize": "resizeValue"
   }
 }

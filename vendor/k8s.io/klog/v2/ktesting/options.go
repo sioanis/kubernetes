@@ -20,6 +20,7 @@ import (
 	"flag"
 	"strconv"
 
+	"k8s.io/klog/v2/internal/serialize"
 	"k8s.io/klog/v2/internal/verbosity"
 )
 
@@ -29,7 +30,7 @@ import (
 //
 // Must be constructed with NewConfig.
 //
-// Experimental
+// # Experimental
 //
 // Notice: This type is EXPERIMENTAL and may be changed or removed in a
 // later release.
@@ -38,23 +39,53 @@ type Config struct {
 	co     configOptions
 }
 
+// Verbosity returns a value instance that can be used to query (via String) or
+// modify (via Set) the verbosity threshold. This is thread-safe and can be
+// done at runtime.
+func (c *Config) Verbosity() flag.Value {
+	return c.vstate.V()
+}
+
+// VModule returns a value instance that can be used to query (via String) or
+// modify (via Set) the vmodule settings. This is thread-safe and can be done
+// at runtime.
+func (c *Config) VModule() flag.Value {
+	return c.vstate.VModule()
+}
+
 // ConfigOption implements functional parameters for NewConfig.
 //
-// Experimental
+// # Experimental
 //
 // Notice: This type is EXPERIMENTAL and may be changed or removed in a
 // later release.
 type ConfigOption func(co *configOptions)
 
 type configOptions struct {
+	anyToString       serialize.AnyToStringFunc
 	verbosityFlagName string
 	vmoduleFlagName   string
 	verbosityDefault  int
+	bufferLogs        bool
+}
+
+// AnyToString overrides the default formatter for values that are not
+// supported directly by klog. The default is `fmt.Sprintf("%+v")`.
+// The formatter must not panic.
+//
+// # Experimental
+//
+// Notice: This function is EXPERIMENTAL and may be changed or removed in a
+// later release.
+func AnyToString(anyToString func(value interface{}) string) ConfigOption {
+	return func(co *configOptions) {
+		co.anyToString = anyToString
+	}
 }
 
 // VerbosityFlagName overrides the default -testing.v for the verbosity level.
 //
-// Experimental
+// # Experimental
 //
 // Notice: This function is EXPERIMENTAL and may be changed or removed in a
 // later release.
@@ -67,7 +98,7 @@ func VerbosityFlagName(name string) ConfigOption {
 // VModulFlagName overrides the default -testing.vmodule for the per-module
 // verbosity levels.
 //
-// Experimental
+// # Experimental
 //
 // Notice: This function is EXPERIMENTAL and may be changed or removed in a
 // later release.
@@ -84,7 +115,7 @@ func VModuleFlagName(name string) ConfigOption {
 // which is useful when debugging a failed test. `go test` only shows the log
 // output for failed tests. To see all output, use `go test -v`.
 //
-// Experimental
+// # Experimental
 //
 // Notice: This function is EXPERIMENTAL and may be changed or removed in a
 // later release.
@@ -94,10 +125,25 @@ func Verbosity(level int) ConfigOption {
 	}
 }
 
+// BufferLogs controls whether log entries are captured in memory in addition
+// to being printed. Off by default. Unit tests that want to verify that
+// log entries are emitted as expected can turn this on and then retrieve
+// the captured log through the Underlier LogSink interface.
+//
+// # Experimental
+//
+// Notice: This function is EXPERIMENTAL and may be changed or removed in a
+// later release.
+func BufferLogs(enabled bool) ConfigOption {
+	return func(co *configOptions) {
+		co.bufferLogs = enabled
+	}
+}
+
 // NewConfig returns a configuration with recommended defaults and optional
 // modifications. Command line flags are not bound to any FlagSet yet.
 //
-// Experimental
+// # Experimental
 //
 // Notice: This function is EXPERIMENTAL and may be changed or removed in a
 // later release.
@@ -120,7 +166,7 @@ func NewConfig(opts ...ConfigOption) *Config {
 
 // AddFlags registers the command line flags that control the configuration.
 //
-// Experimental
+// # Experimental
 //
 // Notice: This function is EXPERIMENTAL and may be changed or removed in a
 // later release.

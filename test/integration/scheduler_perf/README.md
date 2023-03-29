@@ -32,7 +32,7 @@ How To Run
 
 ```shell
 # In Kubernetes root path
-make test-integration WHAT=./test/integration/scheduler_perf ETCD_LOGLEVEL=warn KUBE_TEST_VMODULE="''" KUBE_TEST_ARGS="-alsologtostderr=false -logtostderr=false -run=^$$ -benchtime=1ns -bench=BenchmarkPerfScheduling"
+make test-integration WHAT=./test/integration/scheduler_perf ETCD_LOGLEVEL=warn KUBE_TEST_VMODULE="''" KUBE_TEST_ARGS="-run=^$$ -benchtime=1ns -bench=BenchmarkPerfScheduling"
 ```
 
 The benchmark suite runs all the tests specified under config/performance-config.yaml.
@@ -47,14 +47,14 @@ Otherwise, the golang benchmark framework will try to run a test more than once 
 
 ```shell
 # In Kubernetes root path
-make test-integration WHAT=./test/integration/scheduler_perf ETCD_LOGLEVEL=warn KUBE_TEST_VMODULE="''" KUBE_TEST_ARGS="-alsologtostderr=false -logtostderr=false -run=^$$ -benchtime=1ns -bench=BenchmarkPerfScheduling/SchedulingBasic/5000Nodes/5000InitPods/1000PodsToSchedule"
+make test-integration WHAT=./test/integration/scheduler_perf ETCD_LOGLEVEL=warn KUBE_TEST_VMODULE="''" KUBE_TEST_ARGS="-run=^$$ -benchtime=1ns -bench=BenchmarkPerfScheduling/SchedulingBasic/5000Nodes/5000InitPods/1000PodsToSchedule"
 ```
 
 To produce a cpu profile:
 
 ```shell
 # In Kubernetes root path
-make test-integration WHAT=./test/integration/scheduler_perf KUBE_TIMEOUT="-timeout=3600s" ETCD_LOGLEVEL=warn KUBE_TEST_VMODULE="''" KUBE_TEST_ARGS="-alsologtostderr=false -logtostderr=false -run=^$$ -benchtime=1ns -bench=BenchmarkPerfScheduling -cpuprofile ~/cpu-profile.out"
+make test-integration WHAT=./test/integration/scheduler_perf KUBE_TIMEOUT="-timeout=3600s" ETCD_LOGLEVEL=warn KUBE_TEST_VMODULE="''" KUBE_TEST_ARGS="-run=^$$ -benchtime=1ns -bench=BenchmarkPerfScheduling -cpuprofile ~/cpu-profile.out"
 ```
 
 ### How to configure benchmark tests
@@ -77,3 +77,15 @@ The configuration file under `config/performance-config.yaml` contains a default
 various scenarios. In case you want to add your own, you can extend the list with new templates.
 It's also possible to extend `op` data type, respectively its underlying data types
 to extend configuration of possible test cases.
+
+### Logging
+
+The default verbosity is 2 (the recommended value for production). -v can be
+used to change this. The log format can be changed with
+-logging-format=text|json. The default is to write into a log file (when using
+the text format) or stderr (when using JSON). Together these options allow
+simulating different real production configurations and to compare their
+performance.
+
+During interactive debugging sessions it is possible to enable per-test output
+via -use-testing-log.

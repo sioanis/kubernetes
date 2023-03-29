@@ -18,7 +18,7 @@ package kubelet
 
 import (
 	"bytes"
-	"io/ioutil"
+	"io"
 	"os"
 	"path/filepath"
 	"testing"
@@ -58,7 +58,7 @@ func TestCreateConfigMap(t *testing.T) {
 		t.Fatalf("unexpected failure when defaulting InitConfiguration: %v", err)
 	}
 
-	if err := CreateConfigMap(&internalcfg.ClusterConfiguration, client); err != nil {
+	if err := CreateConfigMap(&internalcfg.ClusterConfiguration, "", client); err != nil {
 		t.Errorf("CreateConfigMap: unexpected error %v", err)
 	}
 }
@@ -84,17 +84,17 @@ func TestApplyKubeletConfigPatches(t *testing.T) {
 		expectedOutput = []byte("bar: 1\nfoo: 0\n")
 	)
 
-	dir, err := ioutil.TempDir("", "patches")
+	dir, err := os.MkdirTemp("", "patches")
 	if err != nil {
 		t.Fatalf("could not create temp dir: %v", err)
 	}
 	defer os.RemoveAll(dir)
 
-	if err := ioutil.WriteFile(filepath.Join(dir, "kubeletconfiguration.yaml"), patch, 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "kubeletconfiguration.yaml"), patch, 0644); err != nil {
 		t.Fatalf("could not write patch file: %v", err)
 	}
 
-	output, err := applyKubeletConfigPatches(input, dir, ioutil.Discard)
+	output, err := applyKubeletConfigPatches(input, dir, io.Discard)
 	if err != nil {
 		t.Fatalf("could not apply patch: %v", err)
 	}

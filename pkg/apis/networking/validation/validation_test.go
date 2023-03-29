@@ -61,7 +61,7 @@ func makePort(proto *api.Protocol, port intstr.IntOrString, endPort int32) netwo
 		r.Port = &port
 	}
 	if endPort != 0 {
-		r.EndPort = utilpointer.Int32Ptr(endPort)
+		r.EndPort = utilpointer.Int32(endPort)
 	}
 	return r
 }
@@ -251,7 +251,7 @@ func TestValidateNetworkPolicy(t *testing.T) {
 	// Success cases are expected to pass validation.
 
 	for k, v := range successCases {
-		if errs := ValidateNetworkPolicy(v); len(errs) != 0 {
+		if errs := ValidateNetworkPolicy(v, NetworkPolicyValidationOptions{AllowInvalidLabelValueInSelector: true}); len(errs) != 0 {
 			t.Errorf("Expected success for the success validation test number %d, got %v", k, errs)
 		}
 	}
@@ -368,7 +368,7 @@ func TestValidateNetworkPolicy(t *testing.T) {
 
 	// Error cases are not expected to pass validation.
 	for testName, networkPolicy := range errorCases {
-		if errs := ValidateNetworkPolicy(networkPolicy); len(errs) == 0 {
+		if errs := ValidateNetworkPolicy(networkPolicy, NetworkPolicyValidationOptions{AllowInvalidLabelValueInSelector: true}); len(errs) == 0 {
 			t.Errorf("Expected failure for test: %s", testName)
 		}
 	}
@@ -423,7 +423,7 @@ func TestValidateNetworkPolicyUpdate(t *testing.T) {
 	for testName, successCase := range successCases {
 		successCase.old.ObjectMeta.ResourceVersion = "1"
 		successCase.update.ObjectMeta.ResourceVersion = "1"
-		if errs := ValidateNetworkPolicyUpdate(&successCase.update, &successCase.old); len(errs) != 0 {
+		if errs := ValidateNetworkPolicyUpdate(&successCase.update, &successCase.old, NetworkPolicyValidationOptions{false}); len(errs) != 0 {
 			t.Errorf("expected success (%s): %v", testName, errs)
 		}
 	}
@@ -450,7 +450,7 @@ func TestValidateNetworkPolicyUpdate(t *testing.T) {
 	for testName, errorCase := range errorCases {
 		errorCase.old.ObjectMeta.ResourceVersion = "1"
 		errorCase.update.ObjectMeta.ResourceVersion = "1"
-		if errs := ValidateNetworkPolicyUpdate(&errorCase.update, &errorCase.old); len(errs) == 0 {
+		if errs := ValidateNetworkPolicyUpdate(&errorCase.update, &errorCase.old, NetworkPolicyValidationOptions{false}); len(errs) == 0 {
 			t.Errorf("expected failure: %s", testName)
 		}
 	}
@@ -628,8 +628,8 @@ func TestValidateIngress(t *testing.T) {
 			},
 		},
 		Status: networking.IngressStatus{
-			LoadBalancer: api.LoadBalancerStatus{
-				Ingress: []api.LoadBalancerIngress{
+			LoadBalancer: networking.IngressLoadBalancerStatus{
+				Ingress: []networking.IngressLoadBalancerIngress{
 					{IP: "127.0.0.1"},
 				},
 			},
@@ -735,7 +735,7 @@ func TestValidateIngress(t *testing.T) {
 								Backend: networking.IngressBackend{
 									Service: serviceBackend,
 									Resource: &api.TypedLocalObjectReference{
-										APIGroup: utilpointer.StringPtr("example.com"),
+										APIGroup: utilpointer.String("example.com"),
 										Kind:     "foo",
 										Name:     "bar",
 									},
@@ -760,7 +760,7 @@ func TestValidateIngress(t *testing.T) {
 								Backend: networking.IngressBackend{
 									Service: serviceBackend,
 									Resource: &api.TypedLocalObjectReference{
-										APIGroup: utilpointer.StringPtr("example.com"),
+										APIGroup: utilpointer.String("example.com"),
 										Kind:     "foo",
 										Name:     "bar",
 									},
@@ -779,7 +779,7 @@ func TestValidateIngress(t *testing.T) {
 				ing.Spec.DefaultBackend = &networking.IngressBackend{
 					Service: serviceBackend,
 					Resource: &api.TypedLocalObjectReference{
-						APIGroup: utilpointer.StringPtr("example.com"),
+						APIGroup: utilpointer.String("example.com"),
 						Kind:     "foo",
 						Name:     "bar",
 					},
@@ -794,7 +794,7 @@ func TestValidateIngress(t *testing.T) {
 				ing.Spec.DefaultBackend = &networking.IngressBackend{
 					Service: serviceBackend,
 					Resource: &api.TypedLocalObjectReference{
-						APIGroup: utilpointer.StringPtr("example.com"),
+						APIGroup: utilpointer.String("example.com"),
 						Kind:     "foo",
 						Name:     "bar",
 					},
@@ -961,7 +961,7 @@ func TestValidateIngressCreate(t *testing.T) {
 		Service: serviceBackend,
 	}
 	resourceBackend := &api.TypedLocalObjectReference{
-		APIGroup: utilpointer.StringPtr("example.com"),
+		APIGroup: utilpointer.String("example.com"),
 		Kind:     "foo",
 		Name:     "bar",
 	}
@@ -983,7 +983,7 @@ func TestValidateIngressCreate(t *testing.T) {
 	}{
 		"class field set": {
 			tweakIngress: func(ingress *networking.Ingress) {
-				ingress.Spec.IngressClassName = utilpointer.StringPtr("bar")
+				ingress.Spec.IngressClassName = utilpointer.String("bar")
 			},
 			expectedErrs: field.ErrorList{},
 		},
@@ -993,12 +993,19 @@ func TestValidateIngressCreate(t *testing.T) {
 			},
 			expectedErrs: field.ErrorList{},
 		},
-		"class field and annotation set": {
+		"class field and annotation set with same value": {
 			tweakIngress: func(ingress *networking.Ingress) {
-				ingress.Spec.IngressClassName = utilpointer.StringPtr("bar")
+				ingress.Spec.IngressClassName = utilpointer.String("foo")
 				ingress.Annotations = map[string]string{annotationIngressClass: "foo"}
 			},
-			expectedErrs: field.ErrorList{field.Invalid(field.NewPath("annotations").Child(annotationIngressClass), "foo", "can not be set when the class field is also set")},
+			expectedErrs: field.ErrorList{},
+		},
+		"class field and annotation set with different value": {
+			tweakIngress: func(ingress *networking.Ingress) {
+				ingress.Spec.IngressClassName = utilpointer.String("bar")
+				ingress.Annotations = map[string]string{annotationIngressClass: "foo"}
+			},
+			expectedErrs: field.ErrorList{field.Invalid(field.NewPath("annotations").Child(annotationIngressClass), "foo", "must match `ingressClassName` when both are specified")},
 		},
 		"valid regex path": {
 			tweakIngress: func(ingress *networking.Ingress) {
@@ -1138,7 +1145,7 @@ func TestValidateIngressUpdate(t *testing.T) {
 		Service: serviceBackend,
 	}
 	resourceBackend := &api.TypedLocalObjectReference{
-		APIGroup: utilpointer.StringPtr("example.com"),
+		APIGroup: utilpointer.String("example.com"),
 		Kind:     "foo",
 		Name:     "bar",
 	}
@@ -1159,7 +1166,7 @@ func TestValidateIngressUpdate(t *testing.T) {
 	}{
 		"class field set": {
 			tweakIngresses: func(newIngress, oldIngress *networking.Ingress) {
-				newIngress.Spec.IngressClassName = utilpointer.StringPtr("bar")
+				newIngress.Spec.IngressClassName = utilpointer.String("bar")
 			},
 			expectedErrs: field.ErrorList{},
 		},
@@ -1171,7 +1178,7 @@ func TestValidateIngressUpdate(t *testing.T) {
 		},
 		"class field and annotation set": {
 			tweakIngresses: func(newIngress, oldIngress *networking.Ingress) {
-				newIngress.Spec.IngressClassName = utilpointer.StringPtr("bar")
+				newIngress.Spec.IngressClassName = utilpointer.String("bar")
 				newIngress.Annotations = map[string]string{annotationIngressClass: "foo"}
 			},
 			expectedErrs: field.ErrorList{},
@@ -1595,44 +1602,44 @@ func TestValidateIngressClass(t *testing.T) {
 		},
 		"valid name, valid controller, valid params": {
 			ingressClass: makeValidIngressClass("test123", "foo.co/bar",
-				setParams(makeIngressClassParams(utilpointer.StringPtr("example.com"), "foo", "bar", utilpointer.StringPtr("Cluster"), nil)),
+				setParams(makeIngressClassParams(utilpointer.String("example.com"), "foo", "bar", utilpointer.String("Cluster"), nil)),
 			),
 			expectedErrs: field.ErrorList{},
 		},
 		"valid name, valid controller, invalid params (no kind)": {
 			ingressClass: makeValidIngressClass("test123", "foo.co/bar",
-				setParams(makeIngressClassParams(utilpointer.StringPtr("example.com"), "", "bar", utilpointer.StringPtr("Cluster"), nil)),
+				setParams(makeIngressClassParams(utilpointer.String("example.com"), "", "bar", utilpointer.String("Cluster"), nil)),
 			),
 			expectedErrs: field.ErrorList{field.Required(field.NewPath("spec.parameters.kind"), "kind is required")},
 		},
 		"valid name, valid controller, invalid params (no name)": {
 			ingressClass: makeValidIngressClass("test123", "foo.co/bar",
-				setParams(makeIngressClassParams(utilpointer.StringPtr("example.com"), "foo", "", utilpointer.StringPtr("Cluster"), nil)),
+				setParams(makeIngressClassParams(utilpointer.String("example.com"), "foo", "", utilpointer.String("Cluster"), nil)),
 			),
 			expectedErrs: field.ErrorList{field.Required(field.NewPath("spec.parameters.name"), "name is required")},
 		},
 		"valid name, valid controller, invalid params (bad kind)": {
 			ingressClass: makeValidIngressClass("test123", "foo.co/bar",
-				setParams(makeIngressClassParams(nil, "foo/", "bar", utilpointer.StringPtr("Cluster"), nil)),
+				setParams(makeIngressClassParams(nil, "foo/", "bar", utilpointer.String("Cluster"), nil)),
 			),
 			expectedErrs: field.ErrorList{field.Invalid(field.NewPath("spec.parameters.kind"), "foo/", "may not contain '/'")},
 		},
 		"valid name, valid controller, invalid params (bad scope)": {
 			ingressClass: makeValidIngressClass("test123", "foo.co/bar",
-				setParams(makeIngressClassParams(nil, "foo", "bar", utilpointer.StringPtr("bad-scope"), nil)),
+				setParams(makeIngressClassParams(nil, "foo", "bar", utilpointer.String("bad-scope"), nil)),
 			),
 			expectedErrs: field.ErrorList{field.NotSupported(field.NewPath("spec.parameters.scope"),
 				"bad-scope", []string{"Cluster", "Namespace"})},
 		},
 		"valid name, valid controller, valid Namespace scope": {
 			ingressClass: makeValidIngressClass("test123", "foo.co/bar",
-				setParams(makeIngressClassParams(nil, "foo", "bar", utilpointer.StringPtr("Namespace"), utilpointer.StringPtr("foo-ns"))),
+				setParams(makeIngressClassParams(nil, "foo", "bar", utilpointer.String("Namespace"), utilpointer.String("foo-ns"))),
 			),
 			expectedErrs: field.ErrorList{},
 		},
 		"valid name, valid controller, valid scope, invalid namespace": {
 			ingressClass: makeValidIngressClass("test123", "foo.co/bar",
-				setParams(makeIngressClassParams(nil, "foo", "bar", utilpointer.StringPtr("Namespace"), utilpointer.StringPtr("foo_ns"))),
+				setParams(makeIngressClassParams(nil, "foo", "bar", utilpointer.String("Namespace"), utilpointer.String("foo_ns"))),
 			),
 			expectedErrs: field.ErrorList{field.Invalid(field.NewPath("spec.parameters.namespace"), "foo_ns",
 				"a lowercase RFC 1123 label must consist of lower case alphanumeric characters or '-',"+
@@ -1641,27 +1648,27 @@ func TestValidateIngressClass(t *testing.T) {
 		},
 		"valid name, valid controller, valid Cluster scope": {
 			ingressClass: makeValidIngressClass("test123", "foo.co/bar",
-				setParams(makeIngressClassParams(nil, "foo", "bar", utilpointer.StringPtr("Cluster"), nil)),
+				setParams(makeIngressClassParams(nil, "foo", "bar", utilpointer.String("Cluster"), nil)),
 			),
 			expectedErrs: field.ErrorList{},
 		},
 		"namespace not set when scope is Namespace": {
 			ingressClass: makeValidIngressClass("test123", "foo.co/bar",
-				setParams(makeIngressClassParams(nil, "foo", "bar", utilpointer.StringPtr("Namespace"), nil)),
+				setParams(makeIngressClassParams(nil, "foo", "bar", utilpointer.String("Namespace"), nil)),
 			),
 			expectedErrs: field.ErrorList{field.Required(field.NewPath("spec.parameters.namespace"),
 				"`parameters.scope` is set to 'Namespace'")},
 		},
 		"namespace is forbidden when scope is Cluster": {
 			ingressClass: makeValidIngressClass("test123", "foo.co/bar",
-				setParams(makeIngressClassParams(nil, "foo", "bar", utilpointer.StringPtr("Cluster"), utilpointer.StringPtr("foo-ns"))),
+				setParams(makeIngressClassParams(nil, "foo", "bar", utilpointer.String("Cluster"), utilpointer.String("foo-ns"))),
 			),
 			expectedErrs: field.ErrorList{field.Forbidden(field.NewPath("spec.parameters.namespace"),
 				"`parameters.scope` is set to 'Cluster'")},
 		},
 		"empty namespace is forbidden when scope is Cluster": {
 			ingressClass: makeValidIngressClass("test123", "foo.co/bar",
-				setParams(makeIngressClassParams(nil, "foo", "bar", utilpointer.StringPtr("Cluster"), utilpointer.StringPtr(""))),
+				setParams(makeIngressClassParams(nil, "foo", "bar", utilpointer.String("Cluster"), utilpointer.String(""))),
 			),
 			expectedErrs: field.ErrorList{field.Forbidden(field.NewPath("spec.parameters.namespace"),
 				"`parameters.scope` is set to 'Cluster'")},
@@ -1712,7 +1719,7 @@ func TestValidateIngressClassUpdate(t *testing.T) {
 			newIngressClass: makeValidIngressClass("test123", "foo.co/bar",
 				setResourceVersion("2"),
 				setParams(
-					makeIngressClassParams(utilpointer.StringPtr("v1"), "ConfigMap", "foo", utilpointer.StringPtr("Namespace"), utilpointer.StringPtr("bar")),
+					makeIngressClassParams(utilpointer.String("v1"), "ConfigMap", "foo", utilpointer.String("Namespace"), utilpointer.String("bar")),
 				),
 			),
 			oldIngressClass: makeValidIngressClass("test123", "foo.co/bar"),
@@ -1774,8 +1781,8 @@ func TestValidateIngressTLS(t *testing.T) {
 				},
 			},
 			Status: networking.IngressStatus{
-				LoadBalancer: api.LoadBalancerStatus{
-					Ingress: []api.LoadBalancerIngress{
+				LoadBalancer: networking.IngressLoadBalancerStatus{
+					Ingress: []networking.IngressLoadBalancerIngress{
 						{IP: "127.0.0.1"},
 					},
 				},
@@ -1926,8 +1933,8 @@ func TestValidateIngressStatusUpdate(t *testing.T) {
 				},
 			},
 			Status: networking.IngressStatus{
-				LoadBalancer: api.LoadBalancerStatus{
-					Ingress: []api.LoadBalancerIngress{
+				LoadBalancer: networking.IngressLoadBalancerStatus{
+					Ingress: []networking.IngressLoadBalancerIngress{
 						{IP: "127.0.0.1", Hostname: "foo.bar.com"},
 					},
 				},
@@ -1937,24 +1944,24 @@ func TestValidateIngressStatusUpdate(t *testing.T) {
 	oldValue := newValid()
 	newValue := newValid()
 	newValue.Status = networking.IngressStatus{
-		LoadBalancer: api.LoadBalancerStatus{
-			Ingress: []api.LoadBalancerIngress{
+		LoadBalancer: networking.IngressLoadBalancerStatus{
+			Ingress: []networking.IngressLoadBalancerIngress{
 				{IP: "127.0.0.2", Hostname: "foo.com"},
 			},
 		},
 	}
 	invalidIP := newValid()
 	invalidIP.Status = networking.IngressStatus{
-		LoadBalancer: api.LoadBalancerStatus{
-			Ingress: []api.LoadBalancerIngress{
+		LoadBalancer: networking.IngressLoadBalancerStatus{
+			Ingress: []networking.IngressLoadBalancerIngress{
 				{IP: "abcd", Hostname: "foo.com"},
 			},
 		},
 	}
 	invalidHostname := newValid()
 	invalidHostname.Status = networking.IngressStatus{
-		LoadBalancer: api.LoadBalancerStatus{
-			Ingress: []api.LoadBalancerIngress{
+		LoadBalancer: networking.IngressLoadBalancerStatus{
+			Ingress: []networking.IngressLoadBalancerIngress{
 				{IP: "127.0.0.1", Hostname: "127.0.0.1"},
 			},
 		},
@@ -1980,5 +1987,430 @@ func TestValidateIngressStatusUpdate(t *testing.T) {
 				t.Errorf("unexpected error: %q, expected: %q", err, k)
 			}
 		}
+	}
+}
+
+func makeNodeSelector(key string, op api.NodeSelectorOperator, values []string) *api.NodeSelector {
+	return &api.NodeSelector{
+		NodeSelectorTerms: []api.NodeSelectorTerm{
+			{
+				MatchExpressions: []api.NodeSelectorRequirement{
+					{
+						Key:      key,
+						Operator: op,
+						Values:   values,
+					},
+				},
+			},
+		},
+	}
+}
+
+func makeClusterCIDR(perNodeHostBits int32, ipv4, ipv6 string, nodeSelector *api.NodeSelector) *networking.ClusterCIDR {
+	return &networking.ClusterCIDR{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:            "foo",
+			ResourceVersion: "9",
+		},
+		Spec: networking.ClusterCIDRSpec{
+			PerNodeHostBits: perNodeHostBits,
+			IPv4:            ipv4,
+			IPv6:            ipv6,
+			NodeSelector:    nodeSelector,
+		},
+	}
+}
+
+func TestValidateClusterCIDR(t *testing.T) {
+	testCases := []struct {
+		name      string
+		cc        *networking.ClusterCIDR
+		expectErr bool
+	}{
+		{
+			name:      "valid SingleStack IPv4 ClusterCIDR",
+			cc:        makeClusterCIDR(8, "10.1.0.0/16", "", makeNodeSelector("foo", api.NodeSelectorOpIn, []string{"bar"})),
+			expectErr: false,
+		},
+		{
+			name:      "valid SingleStack IPv4 ClusterCIDR, perNodeHostBits = maxPerNodeHostBits",
+			cc:        makeClusterCIDR(16, "10.1.0.0/16", "", makeNodeSelector("foo", api.NodeSelectorOpIn, []string{"bar"})),
+			expectErr: false,
+		},
+		{
+			name:      "valid SingleStack IPv4 ClusterCIDR, perNodeHostBits > minPerNodeHostBits",
+			cc:        makeClusterCIDR(4, "10.1.0.0/16", "", makeNodeSelector("foo", api.NodeSelectorOpIn, []string{"bar"})),
+			expectErr: false,
+		},
+		{
+			name:      "valid SingleStack IPv6 ClusterCIDR",
+			cc:        makeClusterCIDR(8, "", "fd00:1:1::/64", makeNodeSelector("foo", api.NodeSelectorOpIn, []string{"bar"})),
+			expectErr: false,
+		},
+		{
+			name:      "valid SingleStack IPv6 ClusterCIDR, perNodeHostBits = maxPerNodeHostBit",
+			cc:        makeClusterCIDR(64, "", "fd00:1:1::/64", makeNodeSelector("foo", api.NodeSelectorOpIn, []string{"bar"})),
+			expectErr: false,
+		},
+		{
+			name:      "valid SingleStack IPv6 ClusterCIDR, perNodeHostBits > minPerNodeHostBit",
+			cc:        makeClusterCIDR(4, "", "fd00:1:1::/64", makeNodeSelector("foo", api.NodeSelectorOpIn, []string{"bar"})),
+			expectErr: false,
+		},
+		{
+			name:      "valid SingleStack IPv6 ClusterCIDR perNodeHostBits=100",
+			cc:        makeClusterCIDR(100, "", "fd00:1:1::/16", makeNodeSelector("foo", api.NodeSelectorOpIn, []string{"bar"})),
+			expectErr: false,
+		},
+		{
+			name:      "valid DualStack ClusterCIDR",
+			cc:        makeClusterCIDR(8, "10.1.0.0/16", "fd00:1:1::/64", makeNodeSelector("foo", api.NodeSelectorOpIn, []string{"bar"})),
+			expectErr: false,
+		},
+		{
+			name:      "valid DualStack ClusterCIDR, no NodeSelector",
+			cc:        makeClusterCIDR(8, "10.1.0.0/16", "fd00:1:1::/64", nil),
+			expectErr: false,
+		},
+		// Failure cases.
+		{
+			name:      "invalid ClusterCIDR, no IPv4 or IPv6 CIDR",
+			cc:        makeClusterCIDR(8, "", "", nil),
+			expectErr: true,
+		},
+		{
+			name:      "invalid ClusterCIDR, invalid nodeSelector",
+			cc:        makeClusterCIDR(8, "10.1.0.0/16", "fd00:1:1::/64", makeNodeSelector("NoUppercaseOrSpecialCharsLike=Equals", api.NodeSelectorOpIn, []string{"bar"})),
+			expectErr: true,
+		},
+		// IPv4 tests.
+		{
+			name:      "invalid SingleStack IPv4 ClusterCIDR, invalid spec.IPv4",
+			cc:        makeClusterCIDR(8, "test", "", makeNodeSelector("foo", api.NodeSelectorOpIn, []string{"bar"})),
+			expectErr: true,
+		},
+		{
+			name:      "invalid Singlestack IPv4 ClusterCIDR, perNodeHostBits > maxPerNodeHostBits",
+			cc:        makeClusterCIDR(100, "10.1.0.0/16", "", makeNodeSelector("foo", api.NodeSelectorOpIn, []string{"bar"})),
+			expectErr: true,
+		},
+		{
+			name:      "invalid SingleStack IPv4 ClusterCIDR, perNodeHostBits < minPerNodeHostBits",
+			cc:        makeClusterCIDR(2, "10.1.0.0/16", "", makeNodeSelector("foo", api.NodeSelectorOpIn, []string{"bar"})),
+			expectErr: true,
+		},
+		// IPv6 tests.
+		{
+			name:      "invalid SingleStack IPv6 ClusterCIDR, invalid spec.IPv6",
+			cc:        makeClusterCIDR(8, "", "testv6", makeNodeSelector("foo", api.NodeSelectorOpIn, []string{"bar"})),
+			expectErr: true,
+		},
+		{
+			name:      "invalid SingleStack IPv6 ClusterCIDR, valid IPv4 CIDR in spec.IPv6",
+			cc:        makeClusterCIDR(8, "", "10.2.0.0/16", makeNodeSelector("foo", api.NodeSelectorOpIn, []string{"bar"})),
+			expectErr: true,
+		},
+		{
+			name:      "invalid SingleStack IPv6 ClusterCIDR, invalid perNodeHostBits > maxPerNodeHostBits",
+			cc:        makeClusterCIDR(12, "", "fd00::/120", makeNodeSelector("foo", api.NodeSelectorOpIn, []string{"bar"})),
+			expectErr: true,
+		},
+		{
+			name:      "invalid SingleStack IPv6 ClusterCIDR, invalid perNodeHostBits < minPerNodeHostBits",
+			cc:        makeClusterCIDR(3, "", "fd00::/120", makeNodeSelector("foo", api.NodeSelectorOpIn, []string{"bar"})),
+			expectErr: true,
+		},
+		// DualStack tests
+		{
+			name:      "invalid DualStack ClusterCIDR, valid spec.IPv4, invalid spec.IPv6",
+			cc:        makeClusterCIDR(8, "10.1.0.0/16", "testv6", makeNodeSelector("foo", api.NodeSelectorOpIn, []string{"bar"})),
+			expectErr: true,
+		},
+		{
+			name:      "invalid DualStack ClusterCIDR, valid spec.IPv6, invalid spec.IPv4",
+			cc:        makeClusterCIDR(8, "testv4", "fd00::/120", makeNodeSelector("foo", api.NodeSelectorOpIn, []string{"bar"})),
+			expectErr: true,
+		},
+		{
+			name:      "invalid DualStack ClusterCIDR, invalid perNodeHostBits > maxPerNodeHostBits",
+			cc:        makeClusterCIDR(24, "10.1.0.0/16", "fd00:1:1::/64", makeNodeSelector("foo", api.NodeSelectorOpIn, []string{"bar"})),
+			expectErr: true,
+		},
+		{
+			name:      "invalid DualStack ClusterCIDR, valid IPv6 CIDR in spec.IPv4",
+			cc:        makeClusterCIDR(8, "fd00::/120", "fd00:1:1::/64", makeNodeSelector("foo", api.NodeSelectorOpIn, []string{"bar"})),
+			expectErr: true,
+		},
+	}
+
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			err := ValidateClusterCIDR(testCase.cc)
+			if !testCase.expectErr && err != nil {
+				t.Errorf("ValidateClusterCIDR(%+v) must be successful for test '%s', got %v", testCase.cc, testCase.name, err)
+			}
+			if testCase.expectErr && err == nil {
+				t.Errorf("ValidateClusterCIDR(%+v) must return an error for test: %s, but got nil", testCase.cc, testCase.name)
+			}
+		})
+	}
+}
+
+func TestValidateClusterConfigUpdate(t *testing.T) {
+	oldCCC := makeClusterCIDR(8, "10.1.0.0/16", "fd00:1:1::/64", makeNodeSelector("foo", api.NodeSelectorOpIn, []string{"bar"}))
+
+	testCases := []struct {
+		name      string
+		cc        *networking.ClusterCIDR
+		expectErr bool
+	}{
+		{
+			name:      "Successful update, no changes to ClusterCIDR.Spec",
+			cc:        makeClusterCIDR(8, "10.1.0.0/16", "fd00:1:1::/64", makeNodeSelector("foo", api.NodeSelectorOpIn, []string{"bar"})),
+			expectErr: false,
+		},
+		{
+			name:      "Failed update, update spec.PerNodeHostBits",
+			cc:        makeClusterCIDR(12, "10.1.0.0/16", "fd00:1:1::/64", makeNodeSelector("foo", api.NodeSelectorOpIn, []string{"bar"})),
+			expectErr: true,
+		},
+		{
+			name:      "Failed update, update spec.IPv4",
+			cc:        makeClusterCIDR(8, "10.2.0.0/16", "fd00:1:1::/64", makeNodeSelector("foo", api.NodeSelectorOpIn, []string{"bar"})),
+			expectErr: true,
+		},
+		{
+			name:      "Failed update, update spec.IPv6",
+			cc:        makeClusterCIDR(8, "10.1.0.0/16", "fd00:2:/112", makeNodeSelector("foo", api.NodeSelectorOpIn, []string{"bar"})),
+			expectErr: true,
+		},
+		{
+			name:      "Failed update, update spec.NodeSelector",
+			cc:        makeClusterCIDR(8, "10.1.0.0/16", "fd00:1:1::/64", makeNodeSelector("foo", api.NodeSelectorOpIn, []string{"bar2"})),
+			expectErr: true,
+		},
+	}
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			err := ValidateClusterCIDRUpdate(testCase.cc, oldCCC)
+			if !testCase.expectErr && err != nil {
+				t.Errorf("ValidateClusterCIDRUpdate(%+v) must be successful for test '%s', got %v", testCase.cc, testCase.name, err)
+			}
+			if testCase.expectErr && err == nil {
+				t.Errorf("ValidateClusterCIDRUpdate(%+v) must return error for test: %s, but got nil", testCase.cc, testCase.name)
+			}
+		})
+	}
+}
+
+func TestValidateIPAddress(t *testing.T) {
+	testCases := map[string]struct {
+		expectedErrors int
+		ipAddress      *networking.IPAddress
+	}{
+		"empty-ipaddress-bad-name": {
+			expectedErrors: 1,
+			ipAddress: &networking.IPAddress{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "test-name",
+				},
+				Spec: networking.IPAddressSpec{
+					ParentRef: &networking.ParentReference{
+						Group:     "",
+						Resource:  "services",
+						Name:      "foo",
+						Namespace: "bar",
+					},
+				},
+			},
+		},
+		"empty-ipaddress-bad-name-no-parent-reference": {
+			expectedErrors: 2,
+			ipAddress: &networking.IPAddress{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "test-name",
+				},
+			},
+		},
+
+		"good-ipaddress": {
+			expectedErrors: 0,
+			ipAddress: &networking.IPAddress{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "192.168.1.1",
+				},
+				Spec: networking.IPAddressSpec{
+					ParentRef: &networking.ParentReference{
+						Group:     "",
+						Resource:  "services",
+						Name:      "foo",
+						Namespace: "bar",
+					},
+				},
+			},
+		},
+		"good-ipaddress-gateway": {
+			expectedErrors: 0,
+			ipAddress: &networking.IPAddress{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "192.168.1.1",
+				},
+				Spec: networking.IPAddressSpec{
+					ParentRef: &networking.ParentReference{
+						Group:     "gateway.networking.k8s.io",
+						Resource:  "gateway",
+						Name:      "foo",
+						Namespace: "bar",
+					},
+				},
+			},
+		},
+		"good-ipv6address": {
+			expectedErrors: 0,
+			ipAddress: &networking.IPAddress{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "2001:4860:4860::8888",
+				},
+				Spec: networking.IPAddressSpec{
+					ParentRef: &networking.ParentReference{
+						Group:     "",
+						Resource:  "services",
+						Name:      "foo",
+						Namespace: "bar",
+					},
+				},
+			},
+		},
+		"non-canonica-ipv6address": {
+			expectedErrors: 1,
+			ipAddress: &networking.IPAddress{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "2001:4860:4860:0::8888",
+				},
+				Spec: networking.IPAddressSpec{
+					ParentRef: &networking.ParentReference{
+						Group:     "",
+						Resource:  "services",
+						Name:      "foo",
+						Namespace: "bar",
+					},
+				},
+			},
+		},
+		"missing-ipaddress-reference": {
+			expectedErrors: 1,
+			ipAddress: &networking.IPAddress{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "192.168.1.1",
+				},
+			},
+		},
+		"wrong-ipaddress-reference": {
+			expectedErrors: 1,
+			ipAddress: &networking.IPAddress{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "192.168.1.1",
+				},
+				Spec: networking.IPAddressSpec{
+					ParentRef: &networking.ParentReference{
+						Group:     "custom.resource.com",
+						Resource:  "services",
+						Name:      "foo$%&",
+						Namespace: "",
+					},
+				},
+			},
+		},
+		"wrong-ipaddress-reference-multiple-errors": {
+			expectedErrors: 4,
+			ipAddress: &networking.IPAddress{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "192.168.1.1",
+				},
+				Spec: networking.IPAddressSpec{
+					ParentRef: &networking.ParentReference{
+						Group:     ".cust@m.resource.com",
+						Resource:  "",
+						Name:      "",
+						Namespace: "bar$$$$$%@",
+					},
+				},
+			},
+		},
+	}
+
+	for name, testCase := range testCases {
+		t.Run(name, func(t *testing.T) {
+			errs := ValidateIPAddress(testCase.ipAddress)
+			if len(errs) != testCase.expectedErrors {
+				t.Errorf("Expected %d errors, got %d errors: %v", testCase.expectedErrors, len(errs), errs)
+			}
+		})
+	}
+}
+
+func TestValidateIPAddressUpdate(t *testing.T) {
+	old := &networking.IPAddress{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:            "192.168.1.1",
+			ResourceVersion: "1",
+		},
+		Spec: networking.IPAddressSpec{
+			ParentRef: &networking.ParentReference{
+				Group:     "custom.resource.com",
+				Resource:  "services",
+				Name:      "foo",
+				Namespace: "bar",
+			},
+		},
+	}
+
+	testCases := []struct {
+		name      string
+		new       func(svc *networking.IPAddress) *networking.IPAddress
+		expectErr bool
+	}{
+		{
+			name: "Successful update, no changes",
+			new: func(old *networking.IPAddress) *networking.IPAddress {
+				out := old.DeepCopy()
+				return out
+			},
+			expectErr: false,
+		},
+
+		{
+			name: "Failed update, update spec.ParentRef",
+			new: func(svc *networking.IPAddress) *networking.IPAddress {
+				out := svc.DeepCopy()
+				out.Spec.ParentRef = &networking.ParentReference{
+					Group:     "custom.resource.com",
+					Resource:  "Gateway",
+					Name:      "foo",
+					Namespace: "bar",
+				}
+
+				return out
+			}, expectErr: true,
+		},
+		{
+			name: "Failed update, delete spec.ParentRef",
+			new: func(svc *networking.IPAddress) *networking.IPAddress {
+				out := svc.DeepCopy()
+				out.Spec.ParentRef = nil
+				return out
+			}, expectErr: true,
+		},
+	}
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			err := ValidateIPAddressUpdate(testCase.new(old), old)
+			if !testCase.expectErr && err != nil {
+				t.Errorf("ValidateIPAddressUpdate must be successful for test '%s', got %v", testCase.name, err)
+			}
+			if testCase.expectErr && err == nil {
+				t.Errorf("ValidateIPAddressUpdate must return error for test: %s, but got nil", testCase.name)
+			}
+		})
 	}
 }

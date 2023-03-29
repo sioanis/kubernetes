@@ -23,7 +23,6 @@ import (
 	"testing"
 
 	v1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	utilfeature "k8s.io/apiserver/pkg/util/feature"
@@ -190,8 +189,6 @@ func TestPodReadOnlyFilesystem(t *testing.T) {
 }
 
 func TestPodCreateEphemeralContainers(t *testing.T) {
-	defer featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.EphemeralContainers, true)()
-
 	// Disable ServiceAccount admission plugin as we don't have serviceaccount controller running.
 	server := kubeapiservertesting.StartTestServerOrDie(t, nil, []string{"--disable-admission-plugins=ServiceAccount"}, framework.SharedEtcd())
 	defer server.TearDownFn()
@@ -261,8 +258,6 @@ func setUpEphemeralContainers(podsClient typedv1.PodInterface, pod *v1.Pod, cont
 }
 
 func TestPodPatchEphemeralContainers(t *testing.T) {
-	defer featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.EphemeralContainers, true)()
-
 	// Disable ServiceAccount admission plugin as we don't have serviceaccount controller running.
 	server := kubeapiservertesting.StartTestServerOrDie(t, nil, []string{"--disable-admission-plugins=ServiceAccount"}, framework.SharedEtcd())
 	defer server.TearDownFn()
@@ -494,8 +489,6 @@ func TestPodPatchEphemeralContainers(t *testing.T) {
 }
 
 func TestPodUpdateEphemeralContainers(t *testing.T) {
-	defer featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.EphemeralContainers, true)()
-
 	// Disable ServiceAccount admission plugin as we don't have serviceaccount controller running.
 	server := kubeapiservertesting.StartTestServerOrDie(t, nil, []string{"--disable-admission-plugins=ServiceAccount"}, framework.SharedEtcd())
 	defer server.TearDownFn()
@@ -685,60 +678,184 @@ func TestPodUpdateEphemeralContainers(t *testing.T) {
 	}
 }
 
-// TestPodEphemeralContainersDisabled tests that the API server returns a 404 when the feature is disabled (because the subresource won't exist).
-// This validates that the feature gate is working, but kubectl also uses the 404 to guess that the feature is disabled on the server.
-func TestPodEphemeralContainersDisabled(t *testing.T) {
-	defer featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.EphemeralContainers, false)()
-
+func TestMutablePodSchedulingDirectives(t *testing.T) {
 	// Disable ServiceAccount admission plugin as we don't have serviceaccount controller running.
 	server := kubeapiservertesting.StartTestServerOrDie(t, nil, []string{"--disable-admission-plugins=ServiceAccount"}, framework.SharedEtcd())
 	defer server.TearDownFn()
 
 	client := clientset.NewForConfigOrDie(server.ClientConfig)
 
-	ns := framework.CreateNamespaceOrDie(client, "pod-ephemeral-containers-disabled", t)
+	ns := framework.CreateNamespaceOrDie(client, "mutable-pod-scheduling-directives", t)
 	defer framework.DeleteNamespaceOrDie(client, ns, t)
 
-	pod := &v1.Pod{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: "ephemeral-container-pod",
-		},
-		Spec: v1.PodSpec{
-			Containers: []v1.Container{
-				{
-					Name:  "fake-name",
-					Image: "fakeimage",
+	cases := []struct {
+		name                  string
+		create                *v1.Pod
+		update                *v1.Pod
+		enableSchedulingGates bool
+		err                   string
+	}{
+		{
+			name: "node selector is immutable when AllowMutableNodeSelector is false",
+			create: &v1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "test-pod",
+				},
+				Spec: v1.PodSpec{
+					Containers: []v1.Container{
+						{
+							Name:  "fake-name",
+							Image: "fakeimage",
+						},
+					},
+					SchedulingGates: []v1.PodSchedulingGate{{Name: "baz"}},
 				},
 			},
+			update: &v1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "test-pod",
+				},
+				Spec: v1.PodSpec{
+					Containers: []v1.Container{
+						{
+							Name:  "fake-name",
+							Image: "fakeimage",
+						},
+					},
+					NodeSelector: map[string]string{
+						"foo": "bar",
+					},
+					SchedulingGates: []v1.PodSchedulingGate{{Name: "baz"}},
+				},
+			},
+			err: "Forbidden: pod updates may not change fields other than `spec.containers[*].image",
+		},
+		{
+			name: "adding node selector is allowed for gated pods",
+			create: &v1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "test-pod",
+				},
+				Spec: v1.PodSpec{
+					Containers: []v1.Container{
+						{
+							Name:  "fake-name",
+							Image: "fakeimage",
+						},
+					},
+					SchedulingGates: []v1.PodSchedulingGate{{Name: "baz"}},
+				},
+			},
+			update: &v1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "test-pod",
+				},
+				Spec: v1.PodSpec{
+					Containers: []v1.Container{
+						{
+							Name:  "fake-name",
+							Image: "fakeimage",
+						},
+					},
+					NodeSelector: map[string]string{
+						"foo": "bar",
+					},
+					SchedulingGates: []v1.PodSchedulingGate{{Name: "baz"}},
+				},
+			},
+			enableSchedulingGates: true,
+		},
+		{
+			name: "addition to nodeAffinity is allowed for gated pods",
+			create: &v1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "test-pod",
+				},
+				Spec: v1.PodSpec{
+					Containers: []v1.Container{
+						{
+							Name:  "fake-name",
+							Image: "fakeimage",
+						},
+					},
+					Affinity: &v1.Affinity{
+						NodeAffinity: &v1.NodeAffinity{
+							RequiredDuringSchedulingIgnoredDuringExecution: &v1.NodeSelector{
+								NodeSelectorTerms: []v1.NodeSelectorTerm{
+									{
+										MatchExpressions: []v1.NodeSelectorRequirement{
+											{
+												Key:      "expr",
+												Operator: v1.NodeSelectorOpIn,
+												Values:   []string{"foo"},
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+					SchedulingGates: []v1.PodSchedulingGate{{Name: "baz"}},
+				},
+			},
+			update: &v1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "test-pod",
+				},
+				Spec: v1.PodSpec{
+					Containers: []v1.Container{
+						{
+							Name:  "fake-name",
+							Image: "fakeimage",
+						},
+					},
+					Affinity: &v1.Affinity{
+						NodeAffinity: &v1.NodeAffinity{
+							RequiredDuringSchedulingIgnoredDuringExecution: &v1.NodeSelector{
+								// Add 1 MatchExpression and 1 MatchField.
+								NodeSelectorTerms: []v1.NodeSelectorTerm{
+									{
+										MatchExpressions: []v1.NodeSelectorRequirement{
+											{
+												Key:      "expr",
+												Operator: v1.NodeSelectorOpIn,
+												Values:   []string{"foo"},
+											},
+											{
+												Key:      "expr2",
+												Operator: v1.NodeSelectorOpIn,
+												Values:   []string{"foo2"},
+											},
+										},
+										MatchFields: []v1.NodeSelectorRequirement{
+											{
+												Key:      "metadata.name",
+												Operator: v1.NodeSelectorOpIn,
+												Values:   []string{"foo"},
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+					SchedulingGates: []v1.PodSchedulingGate{{Name: "baz"}},
+				},
+			},
+			enableSchedulingGates: true,
 		},
 	}
-	pod, err := setUpEphemeralContainers(client.CoreV1().Pods(ns.Name), pod, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer integration.DeletePodOrErrorf(t, client, ns.Name, pod.Name)
+	for _, tc := range cases {
+		defer featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.PodSchedulingReadiness, tc.enableSchedulingGates)()
 
-	pod.Spec.EphemeralContainers = append(pod.Spec.EphemeralContainers, v1.EphemeralContainer{
-		EphemeralContainerCommon: v1.EphemeralContainerCommon{
-			Name:                     "debugger",
-			Image:                    "debugimage",
-			ImagePullPolicy:          "Always",
-			TerminationMessagePolicy: "File",
-		},
-	})
+		if _, err := client.CoreV1().Pods(ns.Name).Create(context.TODO(), tc.create, metav1.CreateOptions{}); err != nil {
+			t.Errorf("Failed to create pod: %v", err)
+		}
 
-	if _, err = client.CoreV1().Pods(ns.Name).UpdateEphemeralContainers(context.TODO(), pod.Name, pod, metav1.UpdateOptions{}); err == nil {
-		t.Fatalf("got nil error when updating ephemeral containers with feature disabled, wanted %q", metav1.StatusReasonNotFound)
-	}
-
-	se, ok := err.(*errors.StatusError)
-	if !ok {
-		t.Fatalf("got error %#v, expected StatusError", err)
-	}
-	if se.ErrStatus.Reason != metav1.StatusReasonNotFound {
-		t.Errorf("got error reason %q when updating ephemeral containers with feature disabled, want %q: %#v", se.ErrStatus.Reason, metav1.StatusReasonNotFound, se)
-	}
-	if se.ErrStatus.Details.Name != "" {
-		t.Errorf("got error details with name %q, want %q: %#v", se.ErrStatus.Details.Name, "", se)
+		_, err := client.CoreV1().Pods(ns.Name).Update(context.TODO(), tc.update, metav1.UpdateOptions{})
+		if (tc.err == "" && err != nil) || (tc.err != "" && err != nil && !strings.Contains(err.Error(), tc.err)) {
+			t.Errorf("Unexpected error: got %q, want %q", err.Error(), err)
+		}
+		integration.DeletePodOrErrorf(t, client, ns.Name, tc.update.Name)
 	}
 }

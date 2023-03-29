@@ -24,7 +24,9 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apiserver/pkg/authentication/serviceaccount"
 	"k8s.io/apiserver/pkg/authentication/user"
+	utilfeature "k8s.io/apiserver/pkg/util/feature"
 	rbacv1helpers "k8s.io/kubernetes/pkg/apis/rbac/v1"
+	"k8s.io/kubernetes/pkg/features"
 )
 
 // Write and other vars are slices of the allowed verbs.
@@ -52,6 +54,7 @@ const (
 	extensionsGroup        = "extensions"
 	policyGroup            = "policy"
 	rbacGroup              = "rbac.authorization.k8s.io"
+	resourceGroup          = "resource.k8s.io"
 	storageGroup           = "storage.k8s.io"
 	resMetricsGroup        = "metrics.k8s.io"
 	customMetricsGroup     = "custom.metrics.k8s.io"
@@ -172,6 +175,16 @@ func NodeRules() []rbacv1.PolicyRule {
 
 	// RuntimeClass
 	nodePolicyRules = append(nodePolicyRules, rbacv1helpers.NewRule("get", "list", "watch").Groups("node.k8s.io").Resources("runtimeclasses").RuleOrDie())
+
+	// DRA Resource Claims
+	if utilfeature.DefaultFeatureGate.Enabled(features.DynamicResourceAllocation) {
+		nodePolicyRules = append(nodePolicyRules, rbacv1helpers.NewRule("get").Groups(resourceGroup).Resources("resourceclaims").RuleOrDie())
+	}
+	// Kubelet needs access to ClusterTrustBundles to support the pemTrustAnchors volume type.
+	if utilfeature.DefaultFeatureGate.Enabled(features.ClusterTrustBundle) {
+		nodePolicyRules = append(nodePolicyRules, rbacv1helpers.NewRule("get", "list", "watch").Groups(certificatesGroup).Resources("clustertrustbundles").RuleOrDie())
+	}
+
 	return nodePolicyRules
 }
 
@@ -208,19 +221,27 @@ func ClusterRoles() []rbacv1.ClusterRole {
 			ObjectMeta: metav1.ObjectMeta{Name: "system:monitoring"},
 			Rules: []rbacv1.PolicyRule{
 				rbacv1helpers.NewRule("get").URLs(
-					"/metrics",
+					"/metrics", "/metrics/slis",
 					"/livez", "/readyz", "/healthz",
 					"/livez/*", "/readyz/*", "/healthz/*",
 				).RuleOrDie(),
 			},
 		},
+	}
+
+	basicUserRules := []rbacv1.PolicyRule{
+		rbacv1helpers.NewRule("create").Groups(authorizationGroup).Resources("selfsubjectaccessreviews", "selfsubjectrulesreviews").RuleOrDie(),
+	}
+
+	if utilfeature.DefaultFeatureGate.Enabled(features.APISelfSubjectReview) {
+		basicUserRules = append(basicUserRules, rbacv1helpers.NewRule("create").Groups(authenticationGroup).Resources("selfsubjectreviews").RuleOrDie())
+	}
+
+	roles = append(roles, []rbacv1.ClusterRole{
 		{
 			// a role which provides minimal resource access to allow a "normal" user to learn information about themselves
 			ObjectMeta: metav1.ObjectMeta{Name: "system:basic-user"},
-			Rules: []rbacv1.PolicyRule{
-				// TODO add future selfsubjectrulesreview, project request APIs, project listing APIs
-				rbacv1helpers.NewRule("create").Groups(authorizationGroup).Resources("selfsubjectaccessreviews", "selfsubjectrulesreviews").RuleOrDie(),
-			},
+			Rules:      basicUserRules,
 		},
 		{
 			// a role which provides just enough power read insensitive cluster information
@@ -304,6 +325,8 @@ func ClusterRoles() []rbacv1.ClusterRole {
 				rbacv1helpers.NewRule(Write...).Groups(policyGroup).Resources("poddisruptionbudgets").RuleOrDie(),
 
 				rbacv1helpers.NewRule(Write...).Groups(networkingGroup).Resources("networkpolicies", "ingresses").RuleOrDie(),
+
+				rbacv1helpers.NewRule(ReadWrite...).Groups(coordinationGroup).Resources("leases").RuleOrDie(),
 			},
 		},
 		{
@@ -351,7 +374,7 @@ func ClusterRoles() []rbacv1.ClusterRole {
 		},
 		{
 			// a role for nodes to use to have the access they need for running pods
-			ObjectMeta: metav1.ObjectMeta{Name: "system:node"},
+			ObjectMeta: metav1.ObjectMeta{Name: systemNodeRoleName},
 			Rules:      NodeRules(),
 		},
 		{
@@ -372,7 +395,7 @@ func ClusterRoles() []rbacv1.ClusterRole {
 				rbacv1helpers.NewRule("get", "list", "watch").Groups(legacyGroup).Resources("nodes").RuleOrDie(),
 				// Allow all API calls to the nodes
 				rbacv1helpers.NewRule("proxy").Groups(legacyGroup).Resources("nodes").RuleOrDie(),
-				rbacv1helpers.NewRule("*").Groups(legacyGroup).Resources("nodes/proxy", "nodes/metrics", "nodes/spec", "nodes/stats", "nodes/log").RuleOrDie(),
+				rbacv1helpers.NewRule("*").Groups(legacyGroup).Resources("nodes/proxy", "nodes/metrics", "nodes/stats", "nodes/log").RuleOrDie(),
 			},
 		},
 		{
@@ -493,7 +516,7 @@ func ClusterRoles() []rbacv1.ClusterRole {
 				rbacv1helpers.NewRule("approve").Groups(certificatesGroup).Resources("signers").Names(capi.KubeAPIServerClientKubeletSignerName).RuleOrDie(),
 			},
 		},
-	}
+	}...)
 
 	// Add the cluster role for reading the ServiceAccountIssuerDiscovery endpoints
 	roles = append(roles, rbacv1.ClusterRole{
@@ -551,11 +574,30 @@ func ClusterRoles() []rbacv1.ClusterRole {
 		rbacv1helpers.NewRule(Read...).Groups(storageGroup).Resources("csidrivers").RuleOrDie(),
 		rbacv1helpers.NewRule(Read...).Groups(storageGroup).Resources("csistoragecapacities").RuleOrDie(),
 	}
+	// Needed for dynamic resource allocation.
+	if utilfeature.DefaultFeatureGate.Enabled(features.DynamicResourceAllocation) {
+		kubeSchedulerRules = append(kubeSchedulerRules,
+			rbacv1helpers.NewRule(Read...).Groups(resourceGroup).Resources("resourceclaims", "resourceclasses").RuleOrDie(),
+			rbacv1helpers.NewRule(ReadUpdate...).Groups(resourceGroup).Resources("resourceclaims/status").RuleOrDie(),
+			rbacv1helpers.NewRule(ReadWrite...).Groups(resourceGroup).Resources("podschedulingcontexts").RuleOrDie(),
+			rbacv1helpers.NewRule(Read...).Groups(resourceGroup).Resources("podschedulingcontexts/status").RuleOrDie(),
+		)
+	}
 	roles = append(roles, rbacv1.ClusterRole{
 		// a role to use for the kube-scheduler
 		ObjectMeta: metav1.ObjectMeta{Name: "system:kube-scheduler"},
 		Rules:      kubeSchedulerRules,
 	})
+
+	// Default ClusterRole to allow reading ClusterTrustBundle objects
+	if utilfeature.DefaultFeatureGate.Enabled(features.ClusterTrustBundle) {
+		roles = append(roles, rbacv1.ClusterRole{
+			ObjectMeta: metav1.ObjectMeta{Name: "system:cluster-trust-bundle-discovery"},
+			Rules: []rbacv1.PolicyRule{
+				rbacv1helpers.NewRule(Read...).Groups(certificatesGroup).Resources("clustertrustbundles").RuleOrDie(),
+			},
+		})
+	}
 
 	addClusterRoleLabel(roles)
 	return roles
@@ -596,6 +638,11 @@ func ClusterRoleBindings() []rbacv1.ClusterRoleBinding {
 	rolebindings = append(rolebindings,
 		rbacv1helpers.NewClusterBinding("system:service-account-issuer-discovery").Groups(serviceaccount.AllServiceAccountsGroup).BindingOrDie(),
 	)
+
+	// Service accounts can read ClusterTrustBundle objects.
+	if utilfeature.DefaultFeatureGate.Enabled(features.ClusterTrustBundle) {
+		rolebindings = append(rolebindings, rbacv1helpers.NewClusterBinding("system:cluster-trust-bundle-discovery").Groups(serviceaccount.AllServiceAccountsGroup).BindingOrDie())
+	}
 
 	addClusterRoleBindingLabel(rolebindings)
 

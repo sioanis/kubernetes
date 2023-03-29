@@ -26,12 +26,12 @@ import (
 	"os"
 	"path"
 	"sort"
+	"testing"
 	"time"
 
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
-	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/client-go/dynamic"
 	coreinformers "k8s.io/client-go/informers/core/v1"
@@ -41,6 +41,7 @@ import (
 	"k8s.io/component-base/metrics/testutil"
 	"k8s.io/klog/v2"
 	"k8s.io/kube-scheduler/config/v1beta2"
+	"k8s.io/kubernetes/cmd/kube-apiserver/app/options"
 	"k8s.io/kubernetes/pkg/scheduler/apis/config"
 	kubeschedulerscheme "k8s.io/kubernetes/pkg/scheduler/apis/config/scheme"
 	"k8s.io/kubernetes/test/integration/framework"
@@ -74,26 +75,30 @@ func newDefaultComponentConfig() (*config.KubeSchedulerConfiguration, error) {
 // remove resources after finished.
 // Notes on rate limiter:
 //   - client rate limit is set to 5000.
-func mustSetupScheduler(config *config.KubeSchedulerConfiguration) (util.ShutdownFunc, coreinformers.PodInformer, clientset.Interface, dynamic.Interface) {
+func mustSetupScheduler(ctx context.Context, b *testing.B, config *config.KubeSchedulerConfiguration) (util.ShutdownFunc, coreinformers.PodInformer, clientset.Interface, dynamic.Interface) {
+	ctx, cancel := context.WithCancel(ctx)
 	// Run API server with minimimal logging by default. Can be raised with -v.
 	framework.MinVerbosity = 0
-	apiURL, apiShutdown := util.StartApiserver()
-	var err error
+
+	_, kubeConfig, tearDownFn := framework.StartTestServer(b, framework.TestServerSetup{
+		ModifyServerRunOptions: func(opts *options.ServerRunOptions) {
+			// Disable ServiceAccount admission plugin as we don't have serviceaccount controller running.
+			opts.Admission.GenericAdmission.DisablePlugins = []string{"ServiceAccount", "TaintNodesByCondition", "Priority"}
+		},
+	})
 
 	// TODO: client connection configuration, such as QPS or Burst is configurable in theory, this could be derived from the `config`, need to
 	// support this when there is any testcase that depends on such configuration.
-	cfg := &restclient.Config{
-		Host:          apiURL,
-		ContentConfig: restclient.ContentConfig{GroupVersion: &schema.GroupVersion{Group: "", Version: "v1"}},
-		QPS:           5000.0,
-		Burst:         5000,
-	}
+	cfg := restclient.CopyConfig(kubeConfig)
+	cfg.QPS = 5000.0
+	cfg.Burst = 5000
 
 	// use default component config if config here is nil
 	if config == nil {
+		var err error
 		config, err = newDefaultComponentConfig()
 		if err != nil {
-			klog.Fatalf("Error creating default component config: %v", err)
+			b.Fatalf("Error creating default component config: %v", err)
 		}
 	}
 
@@ -102,16 +107,15 @@ func mustSetupScheduler(config *config.KubeSchedulerConfiguration) (util.Shutdow
 
 	// Not all config options will be effective but only those mostly related with scheduler performance will
 	// be applied to start a scheduler, most of them are defined in `scheduler.schedulerOptions`.
-	_, podInformer, schedulerShutdown := util.StartScheduler(client, cfg, config)
-	fakePVControllerShutdown := util.StartFakePVController(client)
+	_, podInformer := util.StartScheduler(ctx, client, cfg, config)
+	util.StartFakePVController(ctx, client)
 
-	shutdownFunc := func() {
-		fakePVControllerShutdown()
-		schedulerShutdown()
-		apiShutdown()
+	shutdownFn := func() {
+		cancel()
+		tearDownFn()
 	}
 
-	return shutdownFunc, podInformer, client, dynClient
+	return shutdownFn, podInformer, client, dynClient
 }
 
 // Returns the list of scheduled pods in the specified namespaces.

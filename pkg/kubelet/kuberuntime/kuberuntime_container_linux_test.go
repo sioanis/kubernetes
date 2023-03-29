@@ -20,6 +20,9 @@ limitations under the License.
 package kuberuntime
 
 import (
+	"context"
+	"math"
+	"os"
 	"reflect"
 	"strconv"
 	"testing"
@@ -30,6 +33,7 @@ import (
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/diff"
 	utilfeature "k8s.io/apiserver/pkg/util/feature"
 	featuregatetesting "k8s.io/component-base/featuregate/testing"
 	runtimeapi "k8s.io/cri-api/pkg/apis/runtime/v1"
@@ -39,13 +43,16 @@ import (
 )
 
 func makeExpectedConfig(m *kubeGenericRuntimeManager, pod *v1.Pod, containerIndex int, enforceMemoryQoS bool) *runtimeapi.ContainerConfig {
+	ctx := context.Background()
 	container := &pod.Spec.Containers[containerIndex]
 	podIP := ""
 	restartCount := 0
-	opts, _, _ := m.runtimeHelper.GenerateRunContainerOptions(pod, container, podIP, []string{podIP})
+	opts, _, _ := m.runtimeHelper.GenerateRunContainerOptions(ctx, pod, container, podIP, []string{podIP})
 	containerLogsPath := buildContainerLogsPath(container.Name, restartCount)
 	restartCountUint32 := uint32(restartCount)
 	envs := make([]*runtimeapi.KeyValue, len(opts.Envs))
+
+	l, _ := m.generateLinuxContainerConfig(container, pod, new(int64), "", nil, enforceMemoryQoS)
 
 	expectedConfig := &runtimeapi.ContainerConfig{
 		Metadata: &runtimeapi.ContainerMetadata{
@@ -64,13 +71,15 @@ func makeExpectedConfig(m *kubeGenericRuntimeManager, pod *v1.Pod, containerInde
 		Stdin:       container.Stdin,
 		StdinOnce:   container.StdinOnce,
 		Tty:         container.TTY,
-		Linux:       m.generateLinuxContainerConfig(container, pod, new(int64), "", nil, enforceMemoryQoS),
+		Linux:       l,
 		Envs:        envs,
+		CDIDevices:  makeCDIDevices(opts),
 	}
 	return expectedConfig
 }
 
 func TestGenerateContainerConfig(t *testing.T) {
+	ctx := context.Background()
 	_, imageService, m, err := createTestRuntimeManager()
 	assert.NoError(t, err)
 
@@ -100,7 +109,7 @@ func TestGenerateContainerConfig(t *testing.T) {
 	}
 
 	expectedConfig := makeExpectedConfig(m, pod, 0, false)
-	containerConfig, _, err := m.generateContainerConfig(&pod.Spec.Containers[0], pod, 0, "", pod.Spec.Containers[0].Image, []string{}, nil)
+	containerConfig, _, err := m.generateContainerConfig(ctx, &pod.Spec.Containers[0], pod, 0, "", pod.Spec.Containers[0].Image, []string{}, nil)
 	assert.NoError(t, err)
 	assert.Equal(t, expectedConfig, containerConfig, "generate container config for kubelet runtime v1.")
 	assert.Equal(t, runAsUser, containerConfig.GetLinux().GetSecurityContext().GetRunAsUser().GetValue(), "RunAsUser should be set")
@@ -131,11 +140,11 @@ func TestGenerateContainerConfig(t *testing.T) {
 		},
 	}
 
-	_, _, err = m.generateContainerConfig(&podWithContainerSecurityContext.Spec.Containers[0], podWithContainerSecurityContext, 0, "", podWithContainerSecurityContext.Spec.Containers[0].Image, []string{}, nil)
+	_, _, err = m.generateContainerConfig(ctx, &podWithContainerSecurityContext.Spec.Containers[0], podWithContainerSecurityContext, 0, "", podWithContainerSecurityContext.Spec.Containers[0].Image, []string{}, nil)
 	assert.Error(t, err)
 
-	imageID, _ := imageService.PullImage(&runtimeapi.ImageSpec{Image: "busybox"}, nil, nil)
-	resp, _ := imageService.ImageStatus(&runtimeapi.ImageSpec{Image: imageID}, false)
+	imageID, _ := imageService.PullImage(ctx, &runtimeapi.ImageSpec{Image: "busybox"}, nil, nil)
+	resp, _ := imageService.ImageStatus(ctx, &runtimeapi.ImageSpec{Image: imageID}, false)
 
 	resp.Image.Uid = nil
 	resp.Image.Username = "test"
@@ -143,7 +152,7 @@ func TestGenerateContainerConfig(t *testing.T) {
 	podWithContainerSecurityContext.Spec.Containers[0].SecurityContext.RunAsUser = nil
 	podWithContainerSecurityContext.Spec.Containers[0].SecurityContext.RunAsNonRoot = &runAsNonRootTrue
 
-	_, _, err = m.generateContainerConfig(&podWithContainerSecurityContext.Spec.Containers[0], podWithContainerSecurityContext, 0, "", podWithContainerSecurityContext.Spec.Containers[0].Image, []string{}, nil)
+	_, _, err = m.generateContainerConfig(ctx, &podWithContainerSecurityContext.Spec.Containers[0], podWithContainerSecurityContext, 0, "", podWithContainerSecurityContext.Spec.Containers[0].Image, []string{}, nil)
 	assert.Error(t, err, "RunAsNonRoot should fail for non-numeric username")
 }
 
@@ -215,7 +224,8 @@ func TestGenerateLinuxContainerConfigResources(t *testing.T) {
 			},
 		}
 
-		linuxConfig := m.generateLinuxContainerConfig(&pod.Spec.Containers[0], pod, new(int64), "", nil, false)
+		linuxConfig, err := m.generateLinuxContainerConfig(&pod.Spec.Containers[0], pod, new(int64), "", nil, false)
+		assert.NoError(t, err)
 		assert.Equal(t, test.expected.CpuPeriod, linuxConfig.GetResources().CpuPeriod, test.name)
 		assert.Equal(t, test.expected.CpuQuota, linuxConfig.GetResources().CpuQuota, test.name)
 		assert.Equal(t, test.expected.CpuShares, linuxConfig.GetResources().CpuShares, test.name)
@@ -229,18 +239,23 @@ func TestCalculateLinuxResources(t *testing.T) {
 
 	assert.NoError(t, err)
 
+	generateResourceQuantity := func(str string) *resource.Quantity {
+		quantity := resource.MustParse(str)
+		return &quantity
+	}
+
 	tests := []struct {
 		name     string
-		cpuReq   resource.Quantity
-		cpuLim   resource.Quantity
-		memLim   resource.Quantity
+		cpuReq   *resource.Quantity
+		cpuLim   *resource.Quantity
+		memLim   *resource.Quantity
 		expected *runtimeapi.LinuxContainerResources
 	}{
 		{
 			name:   "Request128MBLimit256MB",
-			cpuReq: resource.MustParse("1"),
-			cpuLim: resource.MustParse("2"),
-			memLim: resource.MustParse("128Mi"),
+			cpuReq: generateResourceQuantity("1"),
+			cpuLim: generateResourceQuantity("2"),
+			memLim: generateResourceQuantity("128Mi"),
 			expected: &runtimeapi.LinuxContainerResources{
 				CpuPeriod:          100000,
 				CpuQuota:           200000,
@@ -250,9 +265,9 @@ func TestCalculateLinuxResources(t *testing.T) {
 		},
 		{
 			name:   "RequestNoMemory",
-			cpuReq: resource.MustParse("2"),
-			cpuLim: resource.MustParse("8"),
-			memLim: resource.MustParse("0"),
+			cpuReq: generateResourceQuantity("2"),
+			cpuLim: generateResourceQuantity("8"),
+			memLim: generateResourceQuantity("0"),
 			expected: &runtimeapi.LinuxContainerResources{
 				CpuPeriod:          100000,
 				CpuQuota:           800000,
@@ -260,9 +275,32 @@ func TestCalculateLinuxResources(t *testing.T) {
 				MemoryLimitInBytes: 0,
 			},
 		},
+		{
+			name:   "RequestNilCPU",
+			cpuLim: generateResourceQuantity("2"),
+			memLim: generateResourceQuantity("0"),
+			expected: &runtimeapi.LinuxContainerResources{
+				CpuPeriod:          100000,
+				CpuQuota:           200000,
+				CpuShares:          2048,
+				MemoryLimitInBytes: 0,
+			},
+		},
+		{
+			name:   "RequestZeroCPU",
+			cpuReq: generateResourceQuantity("0"),
+			cpuLim: generateResourceQuantity("2"),
+			memLim: generateResourceQuantity("0"),
+			expected: &runtimeapi.LinuxContainerResources{
+				CpuPeriod:          100000,
+				CpuQuota:           200000,
+				CpuShares:          2,
+				MemoryLimitInBytes: 0,
+			},
+		},
 	}
 	for _, test := range tests {
-		linuxContainerResources := m.calculateLinuxResources(&test.cpuReq, &test.cpuLim, &test.memLim)
+		linuxContainerResources := m.calculateLinuxResources(test.cpuReq, test.cpuLim, test.memLim)
 		assert.Equal(t, test.expected, linuxContainerResources)
 	}
 }
@@ -271,6 +309,8 @@ func TestGenerateContainerConfigWithMemoryQoSEnforced(t *testing.T) {
 	_, _, m, err := createTestRuntimeManager()
 	assert.NoError(t, err)
 
+	podRequestMemory := resource.MustParse("128Mi")
+	pod1LimitMemory := resource.MustParse("256Mi")
 	pod1 := &v1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			UID:       "12345678",
@@ -287,10 +327,10 @@ func TestGenerateContainerConfigWithMemoryQoSEnforced(t *testing.T) {
 					WorkingDir:      "testWorkingDir",
 					Resources: v1.ResourceRequirements{
 						Requests: v1.ResourceList{
-							v1.ResourceMemory: resource.MustParse("128Mi"),
+							v1.ResourceMemory: podRequestMemory,
 						},
 						Limits: v1.ResourceList{
-							v1.ResourceMemory: resource.MustParse("256Mi"),
+							v1.ResourceMemory: pod1LimitMemory,
 						},
 					},
 				},
@@ -314,21 +354,29 @@ func TestGenerateContainerConfigWithMemoryQoSEnforced(t *testing.T) {
 					WorkingDir:      "testWorkingDir",
 					Resources: v1.ResourceRequirements{
 						Requests: v1.ResourceList{
-							v1.ResourceMemory: resource.MustParse("128Mi"),
+							v1.ResourceMemory: podRequestMemory,
 						},
 					},
 				},
 			},
 		},
 	}
+	pageSize := int64(os.Getpagesize())
 	memoryNodeAllocatable := resource.MustParse(fakeNodeAllocatableMemory)
-	pod2MemoryHigh := float64(memoryNodeAllocatable.Value()) * m.memoryThrottlingFactor
+	pod1MemoryHigh := int64(math.Floor(
+		float64(podRequestMemory.Value())+
+			(float64(pod1LimitMemory.Value())-float64(podRequestMemory.Value()))*float64(m.memoryThrottlingFactor))/float64(pageSize)) * pageSize
+	pod2MemoryHigh := int64(math.Floor(
+		float64(podRequestMemory.Value())+
+			(float64(memoryNodeAllocatable.Value())-float64(podRequestMemory.Value()))*float64(m.memoryThrottlingFactor))/float64(pageSize)) * pageSize
 
 	type expectedResult struct {
 		containerConfig *runtimeapi.LinuxContainerConfig
 		memoryLow       int64
 		memoryHigh      int64
 	}
+	l1, _ := m.generateLinuxContainerConfig(&pod1.Spec.Containers[0], pod1, new(int64), "", nil, true)
+	l2, _ := m.generateLinuxContainerConfig(&pod2.Spec.Containers[0], pod2, new(int64), "", nil, true)
 	tests := []struct {
 		name     string
 		pod      *v1.Pod
@@ -338,16 +386,16 @@ func TestGenerateContainerConfigWithMemoryQoSEnforced(t *testing.T) {
 			name: "Request128MBLimit256MB",
 			pod:  pod1,
 			expected: &expectedResult{
-				m.generateLinuxContainerConfig(&pod1.Spec.Containers[0], pod1, new(int64), "", nil, true),
+				l1,
 				128 * 1024 * 1024,
-				int64(float64(256*1024*1024) * m.memoryThrottlingFactor),
+				int64(pod1MemoryHigh),
 			},
 		},
 		{
 			name: "Request128MBWithoutLimit",
 			pod:  pod2,
 			expected: &expectedResult{
-				m.generateLinuxContainerConfig(&pod2.Spec.Containers[0], pod2, new(int64), "", nil, true),
+				l2,
 				128 * 1024 * 1024,
 				int64(pod2MemoryHigh),
 			},
@@ -355,7 +403,8 @@ func TestGenerateContainerConfigWithMemoryQoSEnforced(t *testing.T) {
 	}
 
 	for _, test := range tests {
-		linuxConfig := m.generateLinuxContainerConfig(&test.pod.Spec.Containers[0], test.pod, new(int64), "", nil, true)
+		linuxConfig, err := m.generateLinuxContainerConfig(&test.pod.Spec.Containers[0], test.pod, new(int64), "", nil, true)
+		assert.NoError(t, err)
 		assert.Equal(t, test.expected.containerConfig, linuxConfig, test.name)
 		assert.Equal(t, linuxConfig.GetResources().GetUnified()["memory.min"], strconv.FormatInt(test.expected.memoryLow, 10), test.name)
 		assert.Equal(t, linuxConfig.GetResources().GetUnified()["memory.high"], strconv.FormatInt(test.expected.memoryHigh, 10), test.name)
@@ -520,7 +569,6 @@ func TestGetHugepageLimitsFromResources(t *testing.T) {
 }
 
 func TestGenerateLinuxContainerConfigNamespaces(t *testing.T) {
-	defer featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.EphemeralContainers, true)()
 	_, _, m, err := createTestRuntimeManager()
 	if err != nil {
 		t.Fatalf("error creating test RuntimeManager: %v", err)
@@ -578,7 +626,8 @@ func TestGenerateLinuxContainerConfigNamespaces(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			got := m.generateLinuxContainerConfig(&tc.pod.Spec.Containers[0], tc.pod, nil, "", tc.target, false)
+			got, err := m.generateLinuxContainerConfig(&tc.pod.Spec.Containers[0], tc.pod, nil, "", tc.target, false)
+			assert.NoError(t, err)
 			if diff := cmp.Diff(tc.want, got.SecurityContext.NamespaceOptions); diff != "" {
 				t.Errorf("%v: diff (-want +got):\n%v", t.Name(), diff)
 			}
@@ -669,8 +718,174 @@ func TestGenerateLinuxContainerConfigSwap(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			m.memorySwapBehavior = tc.swapSetting
-			actual := m.generateLinuxContainerConfig(&tc.pod.Spec.Containers[0], tc.pod, nil, "", nil, false)
+			actual, err := m.generateLinuxContainerConfig(&tc.pod.Spec.Containers[0], tc.pod, nil, "", nil, false)
+			assert.NoError(t, err)
 			assert.Equal(t, tc.expected, actual.Resources.MemorySwapLimitInBytes, "memory swap config for %s", tc.name)
 		})
 	}
+}
+
+func TestGenerateLinuxContainerResources(t *testing.T) {
+	_, _, m, err := createTestRuntimeManager()
+	assert.NoError(t, err)
+	m.machineInfo.MemoryCapacity = 17179860387 // 16GB
+
+	pod := &v1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			UID:       "12345678",
+			Name:      "foo",
+			Namespace: "bar",
+		},
+		Spec: v1.PodSpec{
+			Containers: []v1.Container{
+				{
+					Name:  "c1",
+					Image: "busybox",
+				},
+			},
+		},
+		Status: v1.PodStatus{},
+	}
+
+	for _, tc := range []struct {
+		name      string
+		scalingFg bool
+		limits    v1.ResourceList
+		requests  v1.ResourceList
+		cStatus   []v1.ContainerStatus
+		expected  *runtimeapi.LinuxContainerResources
+	}{
+		{
+			"requests & limits, cpu & memory, guaranteed qos - no container status",
+			true,
+			v1.ResourceList{v1.ResourceCPU: resource.MustParse("250m"), v1.ResourceMemory: resource.MustParse("500Mi")},
+			v1.ResourceList{v1.ResourceCPU: resource.MustParse("250m"), v1.ResourceMemory: resource.MustParse("500Mi")},
+			[]v1.ContainerStatus{},
+			&runtimeapi.LinuxContainerResources{CpuShares: 256, MemoryLimitInBytes: 524288000, OomScoreAdj: -997},
+		},
+		{
+			"requests & limits, cpu & memory, burstable qos - no container status",
+			true,
+			v1.ResourceList{v1.ResourceCPU: resource.MustParse("500m"), v1.ResourceMemory: resource.MustParse("750Mi")},
+			v1.ResourceList{v1.ResourceCPU: resource.MustParse("250m"), v1.ResourceMemory: resource.MustParse("500Mi")},
+			[]v1.ContainerStatus{},
+			&runtimeapi.LinuxContainerResources{CpuShares: 256, MemoryLimitInBytes: 786432000, OomScoreAdj: 970},
+		},
+		{
+			"best-effort qos - no container status",
+			true,
+			nil,
+			nil,
+			[]v1.ContainerStatus{},
+			&runtimeapi.LinuxContainerResources{CpuShares: 2, OomScoreAdj: 1000},
+		},
+		{
+			"requests & limits, cpu & memory, guaranteed qos - empty resources container status",
+			true,
+			v1.ResourceList{v1.ResourceCPU: resource.MustParse("250m"), v1.ResourceMemory: resource.MustParse("500Mi")},
+			v1.ResourceList{v1.ResourceCPU: resource.MustParse("250m"), v1.ResourceMemory: resource.MustParse("500Mi")},
+			[]v1.ContainerStatus{{Name: "c1"}},
+			&runtimeapi.LinuxContainerResources{CpuShares: 256, MemoryLimitInBytes: 524288000, OomScoreAdj: -997},
+		},
+		{
+			"requests & limits, cpu & memory, burstable qos - empty resources container status",
+			true,
+			v1.ResourceList{v1.ResourceCPU: resource.MustParse("500m"), v1.ResourceMemory: resource.MustParse("750Mi")},
+			v1.ResourceList{v1.ResourceCPU: resource.MustParse("250m"), v1.ResourceMemory: resource.MustParse("500Mi")},
+			[]v1.ContainerStatus{{Name: "c1"}},
+			&runtimeapi.LinuxContainerResources{CpuShares: 256, MemoryLimitInBytes: 786432000, OomScoreAdj: 999},
+		},
+		{
+			"best-effort qos - empty resources container status",
+			true,
+			nil,
+			nil,
+			[]v1.ContainerStatus{{Name: "c1"}},
+			&runtimeapi.LinuxContainerResources{CpuShares: 2, OomScoreAdj: 1000},
+		},
+		{
+			"requests & limits, cpu & memory, guaranteed qos - container status with allocatedResources",
+			true,
+			v1.ResourceList{v1.ResourceCPU: resource.MustParse("200m"), v1.ResourceMemory: resource.MustParse("500Mi")},
+			v1.ResourceList{v1.ResourceCPU: resource.MustParse("200m"), v1.ResourceMemory: resource.MustParse("500Mi")},
+			[]v1.ContainerStatus{
+				{
+					Name:               "c1",
+					AllocatedResources: v1.ResourceList{v1.ResourceCPU: resource.MustParse("200m"), v1.ResourceMemory: resource.MustParse("500Mi")},
+				},
+			},
+			&runtimeapi.LinuxContainerResources{CpuShares: 204, MemoryLimitInBytes: 524288000, OomScoreAdj: -997},
+		},
+		{
+			"requests & limits, cpu & memory, burstable qos - container status with allocatedResources",
+			true,
+			v1.ResourceList{v1.ResourceCPU: resource.MustParse("500m"), v1.ResourceMemory: resource.MustParse("750Mi")},
+			v1.ResourceList{v1.ResourceCPU: resource.MustParse("250m"), v1.ResourceMemory: resource.MustParse("500Mi")},
+			[]v1.ContainerStatus{
+				{
+					Name:               "c1",
+					AllocatedResources: v1.ResourceList{v1.ResourceCPU: resource.MustParse("250m"), v1.ResourceMemory: resource.MustParse("500Mi")},
+				},
+			},
+			&runtimeapi.LinuxContainerResources{CpuShares: 256, MemoryLimitInBytes: 786432000, OomScoreAdj: 970},
+		},
+		{
+			"requests & limits, cpu & memory, guaranteed qos - no container status",
+			false,
+			v1.ResourceList{v1.ResourceCPU: resource.MustParse("250m"), v1.ResourceMemory: resource.MustParse("500Mi")},
+			v1.ResourceList{v1.ResourceCPU: resource.MustParse("250m"), v1.ResourceMemory: resource.MustParse("500Mi")},
+			[]v1.ContainerStatus{},
+			&runtimeapi.LinuxContainerResources{CpuShares: 256, MemoryLimitInBytes: 524288000, OomScoreAdj: -997},
+		},
+		{
+			"requests & limits, cpu & memory, burstable qos - container status with allocatedResources",
+			false,
+			v1.ResourceList{v1.ResourceCPU: resource.MustParse("500m"), v1.ResourceMemory: resource.MustParse("750Mi")},
+			v1.ResourceList{v1.ResourceCPU: resource.MustParse("250m"), v1.ResourceMemory: resource.MustParse("500Mi")},
+			[]v1.ContainerStatus{
+				{
+					Name:               "c1",
+					AllocatedResources: v1.ResourceList{v1.ResourceCPU: resource.MustParse("250m"), v1.ResourceMemory: resource.MustParse("500Mi")},
+				},
+			},
+			&runtimeapi.LinuxContainerResources{CpuShares: 256, MemoryLimitInBytes: 786432000, OomScoreAdj: 970},
+		},
+		{
+			"requests & limits, cpu & memory, guaranteed qos - container status with allocatedResources",
+			false,
+			v1.ResourceList{v1.ResourceCPU: resource.MustParse("200m"), v1.ResourceMemory: resource.MustParse("500Mi")},
+			v1.ResourceList{v1.ResourceCPU: resource.MustParse("200m"), v1.ResourceMemory: resource.MustParse("500Mi")},
+			[]v1.ContainerStatus{
+				{
+					Name:               "c1",
+					AllocatedResources: v1.ResourceList{v1.ResourceCPU: resource.MustParse("200m"), v1.ResourceMemory: resource.MustParse("500Mi")},
+				},
+			},
+			&runtimeapi.LinuxContainerResources{CpuShares: 204, MemoryLimitInBytes: 524288000, OomScoreAdj: -997},
+		},
+		{
+			"best-effort qos - no container status",
+			false,
+			nil,
+			nil,
+			[]v1.ContainerStatus{},
+			&runtimeapi.LinuxContainerResources{CpuShares: 2, OomScoreAdj: 1000},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.scalingFg {
+				defer featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.InPlacePodVerticalScaling, true)()
+			}
+			pod.Spec.Containers[0].Resources = v1.ResourceRequirements{Limits: tc.limits, Requests: tc.requests}
+			if len(tc.cStatus) > 0 {
+				pod.Status.ContainerStatuses = tc.cStatus
+			}
+			resources := m.generateLinuxContainerResources(pod, &pod.Spec.Containers[0], false)
+			tc.expected.HugepageLimits = resources.HugepageLimits
+			if diff.ObjectDiff(resources, tc.expected) != "" {
+				t.Errorf("Test %s: expected resources %+v, but got %+v", tc.name, tc.expected, resources)
+			}
+		})
+	}
+	//TODO(vinaykul,InPlacePodVerticalScaling): Add unit tests for cgroup v1 & v2
 }

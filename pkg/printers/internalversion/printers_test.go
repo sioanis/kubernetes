@@ -612,11 +612,11 @@ func TestPrintNodeRole(t *testing.T) {
 			node: api.Node{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:   "foo10",
-					Labels: map[string]string{"node-role.kubernetes.io/master": "", "node-role.kubernetes.io/proxy": "", "kubernetes.io/role": "node"},
+					Labels: map[string]string{"node-role.kubernetes.io/master": "", "node-role.kubernetes.io/control-plane": "", "node-role.kubernetes.io/proxy": "", "kubernetes.io/role": "node"},
 				},
 			},
 			// Columns: Name, Status, Roles, Age, KubeletVersion
-			expected: []metav1.TableRow{{Cells: []interface{}{"foo10", "Unknown", "master,node,proxy", "<unknown>", ""}}},
+			expected: []metav1.TableRow{{Cells: []interface{}{"foo10", "Unknown", "control-plane,master,node,proxy", "<unknown>", ""}}},
 		},
 		{
 			node: api.Node{
@@ -979,8 +979,8 @@ func TestPrintIngress(t *testing.T) {
 			},
 		},
 		Status: networking.IngressStatus{
-			LoadBalancer: api.LoadBalancerStatus{
-				Ingress: []api.LoadBalancerIngress{
+			LoadBalancer: networking.IngressLoadBalancerStatus{
+				Ingress: []networking.IngressLoadBalancerIngress{
 					{
 						IP:       "2.3.4.5",
 						Hostname: "localhost.localdomain",
@@ -1501,6 +1501,24 @@ func TestPrintPod(t *testing.T) {
 				},
 			},
 			[]metav1.TableRow{{Cells: []interface{}{"test14", "2/2", "Running", "9 (5d ago)", "<unknown>"}}},
+		},
+		{
+			// Test PodScheduled condition with reason WaitingForGates
+			api.Pod{
+				ObjectMeta: metav1.ObjectMeta{Name: "test15"},
+				Spec:       api.PodSpec{Containers: make([]api.Container, 2)},
+				Status: api.PodStatus{
+					Phase: "podPhase",
+					Conditions: []api.PodCondition{
+						{
+							Type:   api.PodScheduled,
+							Status: api.ConditionFalse,
+							Reason: api.PodReasonSchedulingGated,
+						},
+					},
+				},
+			},
+			[]metav1.TableRow{{Cells: []interface{}{"test15", "0/2", api.PodReasonSchedulingGated, "0", "<unknown>"}}},
 		},
 	}
 
@@ -5643,7 +5661,7 @@ func TestPrintPriorityLevelConfiguration(t *testing.T) {
 					Type: flowcontrol.PriorityLevelEnablementExempt,
 				},
 			},
-			// Columns: Name, Type, AssuredConcurrencyShares, Queues, HandSize, QueueLengthLimit, Age
+			// Columns: Name, Type, NominalConcurrencyShares, Queues, HandSize, QueueLengthLimit, Age
 			expected: []metav1.TableRow{{Cells: []interface{}{"unlimited", "Exempt", "<none>", "<none>", "<none>", "<none>", "0s"}}},
 		},
 		{
@@ -5655,14 +5673,14 @@ func TestPrintPriorityLevelConfiguration(t *testing.T) {
 				Spec: flowcontrol.PriorityLevelConfigurationSpec{
 					Type: flowcontrol.PriorityLevelEnablementLimited,
 					Limited: &flowcontrol.LimitedPriorityLevelConfiguration{
-						AssuredConcurrencyShares: 47,
+						NominalConcurrencyShares: 47,
 						LimitResponse: flowcontrol.LimitResponse{
 							Type: flowcontrol.LimitResponseTypeReject,
 						},
 					},
 				},
 			},
-			// Columns: Name, Type, AssuredConcurrencyShares, Queues, HandSize, QueueLengthLimit, Age
+			// Columns: Name, Type, NominalConcurrencyShares, Queues, HandSize, QueueLengthLimit, Age
 			expected: []metav1.TableRow{{Cells: []interface{}{"unqueued", "Limited", int32(47), "<none>", "<none>", "<none>", "0s"}}},
 		},
 		{
@@ -5674,7 +5692,7 @@ func TestPrintPriorityLevelConfiguration(t *testing.T) {
 				Spec: flowcontrol.PriorityLevelConfigurationSpec{
 					Type: flowcontrol.PriorityLevelEnablementLimited,
 					Limited: &flowcontrol.LimitedPriorityLevelConfiguration{
-						AssuredConcurrencyShares: 42,
+						NominalConcurrencyShares: 42,
 						LimitResponse: flowcontrol.LimitResponse{
 							Type: flowcontrol.LimitResponseTypeQueue,
 							Queuing: &flowcontrol.QueuingConfiguration{
@@ -5686,7 +5704,7 @@ func TestPrintPriorityLevelConfiguration(t *testing.T) {
 					},
 				},
 			},
-			// Columns: Name, Type, AssuredConcurrencyShares, Queues, HandSize, QueueLengthLimit, Age
+			// Columns: Name, Type, NominalConcurrencyShares, Queues, HandSize, QueueLengthLimit, Age
 			expected: []metav1.TableRow{{Cells: []interface{}{"queued", "Limited", int32(42), int32(8), int32(3), int32(4), "0s"}}},
 		},
 	}
@@ -5984,6 +6002,18 @@ func TestTableRowDeepCopyShouldNotPanic(t *testing.T) {
 			},
 		},
 		{
+			name: "ValidatingAdmissionPolicy",
+			printer: func() ([]metav1.TableRow, error) {
+				return printValidatingAdmissionPolicy(&admissionregistration.ValidatingAdmissionPolicy{}, printers.GenerateOptions{})
+			},
+		},
+		{
+			name: "ValidatingAdmissionPolicyBinding",
+			printer: func() ([]metav1.TableRow, error) {
+				return printValidatingAdmissionPolicyBinding(&admissionregistration.ValidatingAdmissionPolicyBinding{}, printers.GenerateOptions{})
+			},
+		},
+		{
 			name: "Namespace",
 			printer: func() ([]metav1.TableRow, error) {
 				return printNamespace(&api.Namespace{}, printers.GenerateOptions{})
@@ -6065,12 +6095,6 @@ func TestTableRowDeepCopyShouldNotPanic(t *testing.T) {
 			name: "ConfigMap",
 			printer: func() ([]metav1.TableRow, error) {
 				return printConfigMap(&api.ConfigMap{}, printers.GenerateOptions{})
-			},
-		},
-		{
-			name: "PodSecurityPolicy",
-			printer: func() ([]metav1.TableRow, error) {
-				return printPodSecurityPolicy(&policy.PodSecurityPolicy{}, printers.GenerateOptions{})
 			},
 		},
 		{
@@ -6183,4 +6207,358 @@ func TestTableRowDeepCopyShouldNotPanic(t *testing.T) {
 
 		})
 	}
+}
+
+func TestPrintClusterCIDR(t *testing.T) {
+	ipv4CIDR := "10.1.0.0/16"
+	perNodeHostBits := int32(8)
+	ipv6CIDR := "fd00:1:1::/64"
+
+	tests := []struct {
+		ccc      networking.ClusterCIDR
+		options  printers.GenerateOptions
+		expected []metav1.TableRow
+	}{
+		{
+			// Test name, IPv4 only with no node selector.
+			ccc: networking.ClusterCIDR{
+				ObjectMeta: metav1.ObjectMeta{Name: "test1"},
+				Spec: networking.ClusterCIDRSpec{
+					PerNodeHostBits: perNodeHostBits,
+					IPv4:            ipv4CIDR,
+				},
+			},
+			options: printers.GenerateOptions{},
+			// Columns: Name, PerNodeHostBits, IPv4, IPv6, Age.
+			expected: []metav1.TableRow{{Cells: []interface{}{"test1", "8", ipv4CIDR, "<none>", "<unknown>"}}},
+		},
+		{
+			// Test name, IPv4 only with node selector, Not wide.
+			ccc: networking.ClusterCIDR{
+				ObjectMeta: metav1.ObjectMeta{Name: "test2"},
+				Spec: networking.ClusterCIDRSpec{
+					PerNodeHostBits: perNodeHostBits,
+					IPv4:            ipv4CIDR,
+					// Does NOT get printed.
+					NodeSelector: makeNodeSelector("foo", api.NodeSelectorOpIn, []string{"bar"}),
+				},
+			},
+			options: printers.GenerateOptions{},
+			// Columns: Name, PerNodeHostBits, IPv4, IPv6, Age.
+			expected: []metav1.TableRow{{Cells: []interface{}{"test2", "8", ipv4CIDR, "<none>", "<unknown>"}}},
+		},
+		{
+			// Test name, IPv4 only with no node selector, wide.
+			ccc: networking.ClusterCIDR{
+				ObjectMeta: metav1.ObjectMeta{Name: "test3"},
+				Spec: networking.ClusterCIDRSpec{
+					PerNodeHostBits: perNodeHostBits,
+					IPv4:            ipv4CIDR,
+				},
+			},
+			options: printers.GenerateOptions{Wide: true},
+			// Columns: Name, PerNodeHostBits, IPv4, IPv6, Age, NodeSelector .
+			expected: []metav1.TableRow{{Cells: []interface{}{"test3", "8", ipv4CIDR, "<none>", "<unknown>", "<none>"}}},
+		},
+		{
+			// Test name, IPv4 only with node selector, wide.
+			ccc: networking.ClusterCIDR{
+				ObjectMeta: metav1.ObjectMeta{Name: "test4"},
+				Spec: networking.ClusterCIDRSpec{
+					PerNodeHostBits: perNodeHostBits,
+					IPv4:            ipv4CIDR,
+					NodeSelector:    makeNodeSelector("foo", api.NodeSelectorOpIn, []string{"bar"}),
+				},
+			},
+			options: printers.GenerateOptions{Wide: true},
+			// Columns: Name, PerNodeHostBits, IPv4, IPv6, Age, NodeSelector .
+			expected: []metav1.TableRow{{Cells: []interface{}{"test4", "8", ipv4CIDR, "<none>", "<unknown>", "MatchExpressions: [{foo In [bar]}]"}}},
+		},
+		{
+			// Test name, IPv6 only with no node selector.
+			ccc: networking.ClusterCIDR{
+				ObjectMeta: metav1.ObjectMeta{Name: "test5"},
+				Spec: networking.ClusterCIDRSpec{
+					PerNodeHostBits: perNodeHostBits,
+					IPv6:            ipv6CIDR,
+				},
+			},
+			options: printers.GenerateOptions{},
+			// Columns: Name, PerNodeHostBits, IPv4, IPv6, Age
+			expected: []metav1.TableRow{{Cells: []interface{}{"test5", "8", "<none>", ipv6CIDR, "<unknown>"}}},
+		},
+		{
+			// Test name, IPv6 only with node selector, Not wide.
+			ccc: networking.ClusterCIDR{
+				ObjectMeta: metav1.ObjectMeta{Name: "test6"},
+				Spec: networking.ClusterCIDRSpec{
+					PerNodeHostBits: perNodeHostBits,
+					IPv6:            ipv6CIDR,
+					// Does NOT get printed.
+					NodeSelector: makeNodeSelector("foo", api.NodeSelectorOpIn, []string{"bar"}),
+				},
+			},
+			options: printers.GenerateOptions{},
+			// Columns: Name, PerNodeHostBits, IPv4, IPv6, Age.
+			expected: []metav1.TableRow{{Cells: []interface{}{"test6", "8", "<none>", ipv6CIDR, "<unknown>"}}},
+		},
+		{
+			// Test name, IPv6 only with no node selector, wide.
+			ccc: networking.ClusterCIDR{
+				ObjectMeta: metav1.ObjectMeta{Name: "test7"},
+				Spec: networking.ClusterCIDRSpec{
+					PerNodeHostBits: perNodeHostBits,
+					IPv6:            ipv6CIDR,
+				},
+			},
+			options: printers.GenerateOptions{Wide: true},
+			// Columns: Name, PerNodeHostBits, IPv4, IPv6, Age, NodeSelector .
+			expected: []metav1.TableRow{{Cells: []interface{}{"test7", "8", "<none>", ipv6CIDR, "<unknown>", "<none>"}}},
+		},
+		{
+			// Test name, IPv6 only with node selector, wide.
+			ccc: networking.ClusterCIDR{
+				ObjectMeta: metav1.ObjectMeta{Name: "test8"},
+				Spec: networking.ClusterCIDRSpec{
+					PerNodeHostBits: perNodeHostBits,
+					IPv6:            ipv6CIDR,
+					NodeSelector:    makeNodeSelector("foo", api.NodeSelectorOpIn, []string{"bar"}),
+				},
+			},
+			options: printers.GenerateOptions{Wide: true},
+			// Columns: Name, PerNodeHostBits, IPv4, IPv6, Age, NodeSelector .
+			expected: []metav1.TableRow{{Cells: []interface{}{"test8", "8", "<none>", ipv6CIDR, "<unknown>", "MatchExpressions: [{foo In [bar]}]"}}},
+		},
+		{
+			// Test name, DualStack with no node selector.
+			ccc: networking.ClusterCIDR{
+				ObjectMeta: metav1.ObjectMeta{Name: "test9"},
+				Spec: networking.ClusterCIDRSpec{
+					PerNodeHostBits: perNodeHostBits,
+					IPv4:            ipv4CIDR,
+					IPv6:            ipv6CIDR,
+				},
+			},
+			options: printers.GenerateOptions{},
+			// Columns: Name, PerNodeHostBits, IPv4, IPv6, Age.
+			expected: []metav1.TableRow{{Cells: []interface{}{"test9", "8", ipv4CIDR, ipv6CIDR, "<unknown>"}}},
+		},
+		{
+			// Test name,DualStack with node selector, Not wide.
+			ccc: networking.ClusterCIDR{
+				ObjectMeta: metav1.ObjectMeta{Name: "test10"},
+				Spec: networking.ClusterCIDRSpec{
+					PerNodeHostBits: perNodeHostBits,
+					IPv4:            ipv4CIDR,
+					IPv6:            ipv6CIDR,
+					// Does NOT get printed.
+					NodeSelector: makeNodeSelector("foo", api.NodeSelectorOpIn, []string{"bar"}),
+				},
+			},
+			options: printers.GenerateOptions{},
+			// Columns: Name, PerNodeHostBits, IPv4, IPv6, Age.
+			expected: []metav1.TableRow{{Cells: []interface{}{"test10", "8", ipv4CIDR, ipv6CIDR, "<unknown>"}}},
+		},
+		{
+			// Test name, DualStack with no node selector, wide.
+			ccc: networking.ClusterCIDR{
+				ObjectMeta: metav1.ObjectMeta{Name: "test11"},
+				Spec: networking.ClusterCIDRSpec{
+					PerNodeHostBits: perNodeHostBits,
+					IPv4:            ipv4CIDR,
+					IPv6:            ipv6CIDR,
+				},
+			},
+			options: printers.GenerateOptions{Wide: true},
+			// Columns: Name, PerNodeHostBits, IPv4, IPv6, Age, NodeSelector.
+			expected: []metav1.TableRow{{Cells: []interface{}{"test11", "8", ipv4CIDR, ipv6CIDR, "<unknown>", "<none>"}}},
+		},
+		{
+			// Test name, DualStack with node selector, wide.
+			ccc: networking.ClusterCIDR{
+				ObjectMeta: metav1.ObjectMeta{Name: "test12"},
+				Spec: networking.ClusterCIDRSpec{
+					PerNodeHostBits: perNodeHostBits,
+					IPv4:            ipv4CIDR,
+					IPv6:            ipv6CIDR,
+					NodeSelector:    makeNodeSelector("foo", api.NodeSelectorOpIn, []string{"bar"}),
+				},
+			},
+			options: printers.GenerateOptions{Wide: true},
+			// Columns: Name, PerNodeHostBits, IPv4, IPv6, Age, NodeSelector .
+			expected: []metav1.TableRow{{Cells: []interface{}{"test12", "8", ipv4CIDR, ipv6CIDR, "<unknown>", "MatchExpressions: [{foo In [bar]}]"}}},
+		},
+	}
+
+	for i, test := range tests {
+		rows, err := printClusterCIDR(&test.ccc, test.options)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for i := range rows {
+			rows[i].Object.Object = nil
+		}
+		if !reflect.DeepEqual(test.expected, rows) {
+			t.Errorf("%d mismatch: %s", i, diff.ObjectReflectDiff(test.expected, rows))
+		}
+	}
+}
+
+func makeNodeSelector(key string, op api.NodeSelectorOperator, values []string) *api.NodeSelector {
+	return &api.NodeSelector{
+		NodeSelectorTerms: []api.NodeSelectorTerm{
+			{
+				MatchExpressions: []api.NodeSelectorRequirement{
+					{
+						Key:      key,
+						Operator: op,
+						Values:   values,
+					},
+				},
+			},
+		},
+	}
+}
+
+func TestPrintClusterCIDRList(t *testing.T) {
+
+	cccList := networking.ClusterCIDRList{
+		Items: []networking.ClusterCIDR{
+			{
+				ObjectMeta: metav1.ObjectMeta{Name: "ccc1"},
+				Spec: networking.ClusterCIDRSpec{
+					PerNodeHostBits: int32(8),
+					IPv4:            "10.1.0.0/16",
+					IPv6:            "fd00:1:1::/64",
+					NodeSelector:    makeNodeSelector("foo", api.NodeSelectorOpIn, []string{"bar"}),
+				},
+			},
+			{
+				ObjectMeta: metav1.ObjectMeta{Name: "ccc2"},
+				Spec: networking.ClusterCIDRSpec{
+					PerNodeHostBits: int32(8),
+					IPv4:            "10.2.0.0/16",
+					IPv6:            "fd00:2:1::/64",
+					NodeSelector:    makeNodeSelector("foo", api.NodeSelectorOpIn, []string{"bar"}),
+				},
+			},
+		},
+	}
+
+	tests := []struct {
+		options  printers.GenerateOptions
+		expected []metav1.TableRow
+	}{
+		{
+			// Test name, DualStack with node selector, wide.
+			options: printers.GenerateOptions{Wide: false},
+			expected: []metav1.TableRow{
+				// Columns: Name, PerNodeHostBits, IPv4, IPv6, Age.
+				{Cells: []interface{}{"ccc1", "8", "10.1.0.0/16", "fd00:1:1::/64", "<unknown>"}},
+				{Cells: []interface{}{"ccc2", "8", "10.2.0.0/16", "fd00:2:1::/64", "<unknown>"}},
+			},
+		},
+		{
+			// Test name, DualStack with node selector, wide.
+			options: printers.GenerateOptions{Wide: true},
+			expected: []metav1.TableRow{
+				// Columns: Name, PerNodeHostBits, IPv4, IPv6, Age, NodeSelector.
+				{Cells: []interface{}{"ccc1", "8", "10.1.0.0/16", "fd00:1:1::/64", "<unknown>", "MatchExpressions: [{foo In [bar]}]"}},
+				{Cells: []interface{}{"ccc2", "8", "10.2.0.0/16", "fd00:2:1::/64", "<unknown>", "MatchExpressions: [{foo In [bar]}]"}},
+			},
+		},
+	}
+
+	for _, test := range tests {
+		rows, err := printClusterCIDRList(&cccList, test.options)
+		if err != nil {
+			t.Fatalf("Error printing service list: %#v", err)
+		}
+		for i := range rows {
+			rows[i].Object.Object = nil
+		}
+		if !reflect.DeepEqual(test.expected, rows) {
+			t.Errorf("mismatch: %s", diff.ObjectReflectDiff(test.expected, rows))
+		}
+	}
+}
+
+func TestPrintIPAddress(t *testing.T) {
+	ip := networking.IPAddress{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:              "192.168.2.2",
+			CreationTimestamp: metav1.Time{Time: time.Now().AddDate(-10, 0, 0)},
+		},
+		Spec: networking.IPAddressSpec{
+			ParentRef: &networking.ParentReference{
+				Group:     "mygroup",
+				Resource:  "myresource",
+				Namespace: "mynamespace",
+				Name:      "myname",
+			},
+		},
+	}
+	// Columns: Name, ParentRef, Age
+	expected := []metav1.TableRow{{Cells: []interface{}{"192.168.2.2", "myresource.mygroup/mynamespace/myname", "10y"}}}
+
+	rows, err := printIPAddress(&ip, printers.GenerateOptions{})
+	if err != nil {
+		t.Fatalf("Error generating table rows for IPAddress: %#v", err)
+	}
+	rows[0].Object.Object = nil
+	if !reflect.DeepEqual(expected, rows) {
+		t.Errorf("mismatch: %s", diff.ObjectReflectDiff(expected, rows))
+	}
+}
+
+func TestPrintIPAddressList(t *testing.T) {
+	ipList := networking.IPAddressList{
+		Items: []networking.IPAddress{
+			{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:              "192.168.2.2",
+					CreationTimestamp: metav1.Time{Time: time.Now().AddDate(-10, 0, 0)},
+				},
+				Spec: networking.IPAddressSpec{
+					ParentRef: &networking.ParentReference{
+						Group:     "mygroup",
+						Resource:  "myresource",
+						Namespace: "mynamespace",
+						Name:      "myname",
+					},
+				},
+			}, {
+				ObjectMeta: metav1.ObjectMeta{
+					Name:              "2001:db8::2",
+					CreationTimestamp: metav1.Time{Time: time.Now().AddDate(-5, 0, 0)},
+				},
+				Spec: networking.IPAddressSpec{
+					ParentRef: &networking.ParentReference{
+						Group:     "mygroup2",
+						Resource:  "myresource2",
+						Namespace: "mynamespace2",
+						Name:      "myname2",
+					},
+				},
+			},
+		},
+	}
+	// Columns: Name, ParentRef, Age
+	expected := []metav1.TableRow{
+		{Cells: []interface{}{"192.168.2.2", "myresource.mygroup/mynamespace/myname", "10y"}},
+		{Cells: []interface{}{"2001:db8::2", "myresource2.mygroup2/mynamespace2/myname2", "5y1d"}},
+	}
+
+	rows, err := printIPAddressList(&ipList, printers.GenerateOptions{})
+	if err != nil {
+		t.Fatalf("Error generating table rows for IPAddress: %#v", err)
+	}
+	for i := range rows {
+		rows[i].Object.Object = nil
+
+	}
+	if !reflect.DeepEqual(expected, rows) {
+		t.Errorf("mismatch: %s", diff.ObjectReflectDiff(expected, rows))
+	}
+
 }

@@ -27,7 +27,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/intstr"
 	iptablestest "k8s.io/kubernetes/pkg/util/iptables/testing"
 	netutils "k8s.io/utils/net"
-	utilpointer "k8s.io/utils/pointer"
+	"k8s.io/utils/pointer"
 )
 
 // kube-proxy generates iptables rules to forward traffic from Services to Endpoints
@@ -56,63 +56,63 @@ func TestNumberIptablesRules(t *testing.T) {
 			name:                "0 Services 0 EndpointsPerService - ClusterIP",
 			services:            0,
 			epPerService:        0,
-			expectedFilterRules: 3,
+			expectedFilterRules: 4,
 			expectedNatRules:    5,
 		},
 		{
 			name:                "1 Services 0 EndpointPerService - ClusterIP",
 			services:            1,
 			epPerService:        0,
-			expectedFilterRules: 4,
+			expectedFilterRules: 5,
 			expectedNatRules:    5,
 		},
 		{
 			name:                "1 Services 1 EndpointPerService - ClusterIP",
 			services:            1,
 			epPerService:        1,
-			expectedFilterRules: 3,
+			expectedFilterRules: 4,
 			expectedNatRules:    10,
 		},
 		{
 			name:                "1 Services 2 EndpointPerService - ClusterIP",
 			services:            1,
 			epPerService:        2,
-			expectedFilterRules: 3,
+			expectedFilterRules: 4,
 			expectedNatRules:    13,
 		},
 		{
 			name:                "1 Services 10 EndpointPerService - ClusterIP",
 			services:            1,
 			epPerService:        10,
-			expectedFilterRules: 3,
+			expectedFilterRules: 4,
 			expectedNatRules:    37,
 		},
 		{
 			name:                "10 Services 0 EndpointsPerService - ClusterIP",
 			services:            10,
 			epPerService:        0,
-			expectedFilterRules: 13,
+			expectedFilterRules: 14,
 			expectedNatRules:    5,
 		},
 		{
 			name:                "10 Services 1 EndpointPerService - ClusterIP",
 			services:            10,
 			epPerService:        1,
-			expectedFilterRules: 3,
+			expectedFilterRules: 4,
 			expectedNatRules:    55,
 		},
 		{
 			name:                "10 Services 2 EndpointPerService - ClusterIP",
 			services:            10,
 			epPerService:        2,
-			expectedFilterRules: 3,
+			expectedFilterRules: 4,
 			expectedNatRules:    85,
 		},
 		{
 			name:                "10 Services 10 EndpointPerService - ClusterIP",
 			services:            10,
 			epPerService:        10,
-			expectedFilterRules: 3,
+			expectedFilterRules: 4,
 			expectedNatRules:    325,
 		},
 
@@ -128,7 +128,7 @@ func TestNumberIptablesRules(t *testing.T) {
 			},
 			services:            0,
 			epPerService:        0,
-			expectedFilterRules: 3,
+			expectedFilterRules: 4,
 			expectedNatRules:    5,
 		},
 		{
@@ -143,7 +143,7 @@ func TestNumberIptablesRules(t *testing.T) {
 			},
 			services:            1,
 			epPerService:        0,
-			expectedFilterRules: 7,
+			expectedFilterRules: 8,
 			expectedNatRules:    5,
 		},
 		{
@@ -158,7 +158,7 @@ func TestNumberIptablesRules(t *testing.T) {
 			},
 			services:            1,
 			epPerService:        1,
-			expectedFilterRules: 3,
+			expectedFilterRules: 5,
 			expectedNatRules:    17,
 		},
 		{
@@ -173,7 +173,7 @@ func TestNumberIptablesRules(t *testing.T) {
 			},
 			services:            1,
 			epPerService:        2,
-			expectedFilterRules: 3,
+			expectedFilterRules: 5,
 			expectedNatRules:    20,
 		},
 		{
@@ -188,7 +188,7 @@ func TestNumberIptablesRules(t *testing.T) {
 			},
 			services:            1,
 			epPerService:        10,
-			expectedFilterRules: 3,
+			expectedFilterRules: 5,
 			expectedNatRules:    44,
 		},
 		{
@@ -203,7 +203,7 @@ func TestNumberIptablesRules(t *testing.T) {
 			},
 			services:            10,
 			epPerService:        0,
-			expectedFilterRules: 43,
+			expectedFilterRules: 44,
 			expectedNatRules:    5,
 		},
 		{
@@ -218,7 +218,7 @@ func TestNumberIptablesRules(t *testing.T) {
 			},
 			services:            10,
 			epPerService:        1,
-			expectedFilterRules: 3,
+			expectedFilterRules: 14,
 			expectedNatRules:    125,
 		},
 		{
@@ -233,7 +233,7 @@ func TestNumberIptablesRules(t *testing.T) {
 			},
 			services:            10,
 			epPerService:        2,
-			expectedFilterRules: 3,
+			expectedFilterRules: 14,
 			expectedNatRules:    155,
 		},
 		{
@@ -248,7 +248,7 @@ func TestNumberIptablesRules(t *testing.T) {
 			},
 			services:            10,
 			epPerService:        10,
-			expectedFilterRules: 3,
+			expectedFilterRules: 14,
 			expectedNatRules:    395,
 		},
 	}
@@ -371,8 +371,8 @@ func generateServiceEndpoints(nServices, nEndpoints int, epsFunc func(eps *disco
 		AddressType: discovery.AddressTypeIPv4,
 		Endpoints:   []discovery.Endpoint{},
 		Ports: []discovery.EndpointPort{{
-			Name:     utilpointer.StringPtr(fmt.Sprintf("%d", epPort)),
-			Port:     utilpointer.Int32(int32(epPort)),
+			Name:     pointer.String(fmt.Sprintf("%d", epPort)),
+			Port:     pointer.Int32(int32(epPort)),
 			Protocol: &tcpProtocol,
 		}},
 	}
